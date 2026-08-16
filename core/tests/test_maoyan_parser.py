@@ -189,6 +189,22 @@ def test_booking_control_without_an_anchor_is_legitimately_closed(adapter, targe
     assert result.cinemas[0].booking_url == ""
 
 
+def test_known_booking_label_without_an_anchor_is_a_structure_error(adapter, target):
+    """Silently closing a visible known CTA without an href must fail this test."""
+    html = read_fixture("live_open.html").replace(
+        (
+            '<span class="buy-btn">\n'
+            '        <a href="/cinema/37534?poi=94710&amp;movieId=1545360&amp;'
+            'tracking=discarded">选座购票</a>\n'
+            "      </span>"
+        ),
+        '<span class="buy-btn">选座购票</span>',
+    )
+
+    with pytest.raises(PageStructureError):
+        adapter.parse_html(html, target)
+
+
 @pytest.mark.parametrize(
     "identity_href",
     [
@@ -201,7 +217,6 @@ def test_booking_control_without_an_anchor_is_legitimately_closed(adapter, targe
         "/cinema/37534?poi=94710&movieId=1545360&tracking=unexpected",
         "/cinema/37534?poi=94710&movieId=1545360&movieId=1545360",
         "/cinema/37534?poi=94710&movieId=9999999",
-        "/cinema/37534?poi=94710",
         "/cinema/37534?movieId=1545360",
         "/cinema/37534?poi=not-a-number&movieId=1545360",
     ],
@@ -218,6 +233,28 @@ def test_live_cinema_identity_rejects_unsafe_or_conflicting_urls(
 
     with pytest.raises(PageStructureError):
         adapter.parse_html(html, target)
+
+
+@pytest.mark.parametrize(
+    "identity_href",
+    [
+        "/cinema/37534?poi=94710",
+        "/cinema/37534?poi=94710&movieId=1545360",
+    ],
+)
+def test_live_cinema_identity_accepts_safe_observed_query_variants(
+    adapter, target, identity_href
+):
+    """Requiring movieId when a numeric poi already identifies the cinema must fail this test."""
+    html = read_fixture("live_open.html").replace(
+        "/cinema/37534?poi=94710&amp;movieId=1545360",
+        identity_href.replace("&", "&amp;"),
+        1,
+    )
+
+    result = adapter.parse_html(html, target)
+
+    assert result.cinemas[0].cinema_id == "37534"
 
 
 @pytest.mark.parametrize("host", ["maoyan.com", "www.maoyan.com"])

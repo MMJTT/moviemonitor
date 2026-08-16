@@ -273,6 +273,8 @@ class MaoyanAdapter:
                 booking_url = self._validated_booking_url(buy_link["href"], cinema_id, target)
                 if not booking_url:
                     raise PageStructureError("cinema cell has invalid booking URL")
+            elif control.get_text(" ", strip=True) == "选座购票":
+                raise PageStructureError("cinema cell has invalid booking control")
         return CinemaAvailability(
             cinema_id=cinema_id,
             name=name,
@@ -310,9 +312,13 @@ class MaoyanAdapter:
         if parameters:
             values = dict(parameters)
             if (
-                set(values) != CINEMA_IDENTITY_PARAMETERS
-                or values["movieId"] != target.movie_id
+                not set(values) <= CINEMA_IDENTITY_PARAMETERS
+                or "poi" not in values
                 or not values["poi"].isdigit()
+                or (
+                    "movieId" in values
+                    and values["movieId"] != target.movie_id
+                )
             ):
                 return None
         return path_parts[2]
