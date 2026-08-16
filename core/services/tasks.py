@@ -53,7 +53,7 @@ class TaskTransitionError(ValueError):
     """Raised when the current durable task state rejects a lifecycle action."""
 
 
-_opening_notification_transition_lock = threading.Lock()
+_opening_notification_transition_lock = threading.RLock()
 
 
 @contextmanager

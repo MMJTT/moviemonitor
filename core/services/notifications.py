@@ -23,31 +23,32 @@ EXPIRABLE_TASK_STATUSES = (
 
 
 def _expire_locked_task(task, now):
-    task.status = MonitorTask.Status.EXPIRED
-    task.expired_at = now
-    task.next_check_at = None
-    task.save(update_fields=["status", "expired_at", "next_check_at", "updated_at"])
-    Notification.objects.filter(
-        task=task,
-        notification_type=Notification.Type.OPENING,
-        status=Notification.Status.PENDING,
-    ).update(
-        status=Notification.Status.PERMANENT_FAILED,
-        next_attempt_at=None,
-        last_error=EXPIRED_BEFORE_DELIVERY,
-        updated_at=now,
-    )
-    Notification.objects.get_or_create(
-        task=task,
-        notification_type=Notification.Type.EXPIRY,
-        defaults={"status": Notification.Status.PENDING},
-    )
+    with opening_notification_transition():
+        task.status = MonitorTask.Status.EXPIRED
+        task.expired_at = now
+        task.next_check_at = None
+        task.save(update_fields=["status", "expired_at", "next_check_at", "updated_at"])
+        Notification.objects.filter(
+            task=task,
+            notification_type=Notification.Type.OPENING,
+            status=Notification.Status.PENDING,
+        ).update(
+            status=Notification.Status.PERMANENT_FAILED,
+            next_attempt_at=None,
+            last_error=EXPIRED_BEFORE_DELIVERY,
+            updated_at=now,
+        )
+        Notification.objects.get_or_create(
+            task=task,
+            notification_type=Notification.Type.EXPIRY,
+            defaults={"status": Notification.Status.PENDING},
+        )
 
 
 def expire_due_task(now=None):
     now = now or timezone.now()
     local_date = timezone.localdate(now)
-    with transaction.atomic():
+    with opening_notification_transition(), transaction.atomic():
         task = (
             MonitorTask.objects.select_for_update()
             .filter(status__in=EXPIRABLE_TASK_STATUSES, show_date__lt=local_date)

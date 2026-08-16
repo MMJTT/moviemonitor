@@ -10,7 +10,7 @@ from django.utils import timezone
 
 from core.models import MonitorTask, Notification
 from core.scheduler import set_process_scheduler
-from core.services.notifications import deliver_notification
+from core.services.notifications import deliver_notification, expire_due_task
 
 
 class RecordingScheduler:
@@ -262,6 +262,138 @@ def test_cancel_wins_competing_delivery_without_database_lock_or_send(
     assert opening_notification.task.status == MonitorTask.Status.CANCELLED
     assert opening_notification.task.cancelled_at is not None
     send.assert_not_called()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_cancel_wins_competing_expiry_without_database_lock(
+    opening_notification, mocker
+):
+    """A cancel-first expiry race must leave cancellation durable without SQLite errors."""
+    now = timezone.now()
+    opening_notification.task.show_date = timezone.localdate(now) - timedelta(days=1)
+    opening_notification.task.save(update_fields=["show_date"])
+    cancel_before_write = threading.Event()
+    release_cancel = threading.Event()
+    expiry_before_write = threading.Event()
+    release_expiry = threading.Event()
+    original_task_save = MonitorTask.save
+
+    def coordinated_task_save(task, *args, **kwargs):
+        thread_name = threading.current_thread().name
+        if thread_name == "task-cancel" and task.status == MonitorTask.Status.CANCELLED:
+            cancel_before_write.set()
+            assert release_cancel.wait(timeout=2)
+        if thread_name == "task-expiry" and task.status == MonitorTask.Status.EXPIRED:
+            expiry_before_write.set()
+            assert release_expiry.wait(timeout=2)
+        return original_task_save(task, *args, **kwargs)
+
+    mocker.patch.object(MonitorTask, "save", new=coordinated_task_save)
+    cancel_responses = []
+    cancel_thread, cancel_errors = start_database_thread(
+        "task-cancel",
+        lambda: cancel_responses.append(
+            Client().post(
+                reverse("core:task-cancel", args=[opening_notification.task_id])
+            )
+        ),
+    )
+    assert cancel_before_write.wait(timeout=2)
+
+    expiry_results = []
+    expiry_thread, expiry_errors = start_database_thread(
+        "task-expiry",
+        lambda: expiry_results.append(expire_due_task(now=now)),
+    )
+    expiry_before_write.wait(timeout=0.5)
+    release_cancel.set()
+    cancel_thread.join(timeout=2)
+    release_expiry.set()
+    expiry_thread.join(timeout=2)
+
+    assert cancel_thread.is_alive() is False
+    assert expiry_thread.is_alive() is False
+    assert cancel_errors == []
+    assert expiry_errors == []
+    assert len(cancel_responses) == 1
+    assert cancel_responses[0].status_code == 302
+    assert expiry_results == [False]
+    opening_notification.refresh_from_db()
+    opening_notification.task.refresh_from_db()
+    assert opening_notification.task.status == MonitorTask.Status.CANCELLED
+    assert opening_notification.task.cancelled_at is not None
+    assert opening_notification.task.expired_at is None
+    assert opening_notification.status == Notification.Status.PERMANENT_FAILED
+    assert opening_notification.last_error == "task-no-longer-detected"
+    assert opening_notification.task.notifications.filter(
+        notification_type=Notification.Type.EXPIRY
+    ).count() == 0
+
+
+@pytest.mark.django_db(transaction=True)
+def test_expiry_wins_competing_cancel_and_cancel_returns_conflict(
+    opening_notification, mocker
+):
+    """An expiry-first race must preserve expiry and return 409 without SQLite errors."""
+    now = timezone.now()
+    opening_notification.task.show_date = timezone.localdate(now) - timedelta(days=1)
+    opening_notification.task.save(update_fields=["show_date"])
+    expiry_before_write = threading.Event()
+    release_expiry = threading.Event()
+    cancel_before_write = threading.Event()
+    release_cancel = threading.Event()
+    original_task_save = MonitorTask.save
+
+    def coordinated_task_save(task, *args, **kwargs):
+        thread_name = threading.current_thread().name
+        if thread_name == "task-expiry" and task.status == MonitorTask.Status.EXPIRED:
+            expiry_before_write.set()
+            assert release_expiry.wait(timeout=2)
+        if thread_name == "task-cancel" and task.status == MonitorTask.Status.CANCELLED:
+            cancel_before_write.set()
+            assert release_cancel.wait(timeout=2)
+        return original_task_save(task, *args, **kwargs)
+
+    mocker.patch.object(MonitorTask, "save", new=coordinated_task_save)
+    expiry_results = []
+    expiry_thread, expiry_errors = start_database_thread(
+        "task-expiry",
+        lambda: expiry_results.append(expire_due_task(now=now)),
+    )
+    assert expiry_before_write.wait(timeout=2)
+
+    cancel_responses = []
+    cancel_thread, cancel_errors = start_database_thread(
+        "task-cancel",
+        lambda: cancel_responses.append(
+            Client().post(
+                reverse("core:task-cancel", args=[opening_notification.task_id])
+            )
+        ),
+    )
+    cancel_before_write.wait(timeout=0.5)
+    release_expiry.set()
+    expiry_thread.join(timeout=2)
+    release_cancel.set()
+    cancel_thread.join(timeout=2)
+
+    assert expiry_thread.is_alive() is False
+    assert cancel_thread.is_alive() is False
+    assert expiry_errors == []
+    assert cancel_errors == []
+    assert expiry_results == [True]
+    assert len(cancel_responses) == 1
+    assert cancel_responses[0].status_code == 409
+    opening_notification.refresh_from_db()
+    opening_notification.task.refresh_from_db()
+    assert opening_notification.task.status == MonitorTask.Status.EXPIRED
+    assert opening_notification.task.expired_at == now
+    assert opening_notification.task.cancelled_at is None
+    assert opening_notification.status == Notification.Status.PERMANENT_FAILED
+    assert opening_notification.last_error == "expired-before-delivery"
+    assert opening_notification.task.notifications.filter(
+        notification_type=Notification.Type.EXPIRY
+    ).count() == 1
 
 
 @pytest.mark.django_db
