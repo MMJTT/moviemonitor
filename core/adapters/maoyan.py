@@ -1,4 +1,5 @@
 import hashlib
+import re
 import unicodedata
 from datetime import date
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
@@ -22,9 +23,16 @@ ALLOWED_FILTERS = frozenset(
     {"movieId", "showDate", "brandId", "districtId", "hallType", "serviceId"}
 )
 BASE_URL = "https://www.maoyan.com"
+BOOTSTRAP_URL = f"{BASE_URL}/"
+BOOKING_PARAMETERS = frozenset({"movieId", "poi", "showDate"})
 DESKTOP_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+)
+CITY_ID_PATTERN = re.compile(r"^\{\s*currentcityid\s*:\s*(\d+)\s*\}$")
+MOVIE_ID_PATTERN = re.compile(r"^\{\s*movieid\s*:\s*(\d+)\s*\}$")
+SHOW_DATE_PATTERN = re.compile(
+    r"^\{\s*TagName\s*:\s*['\"](\d{4}-\d{2}-\d{2})['\"]\s*\}$"
 )
 
 
@@ -72,6 +80,13 @@ class MaoyanAdapter:
 
     def fetch(self, target: ParsedTarget) -> CheckResult:
         try:
+            bootstrap_response = self.session.get(
+                BOOTSTRAP_URL,
+                headers={"User-Agent": DESKTOP_USER_AGENT},
+                timeout=15,
+                allow_redirects=False,
+            )
+            self._validate_response_status(bootstrap_response)
             response = self.session.get(
                 target.normalized_url,
                 headers={"User-Agent": DESKTOP_USER_AGENT},
@@ -82,6 +97,11 @@ class MaoyanAdapter:
         except requests.RequestException as exc:
             raise TemporaryPlatformError("network request failed") from exc
 
+        self._validate_response_status(response)
+        return self.parse_html(response.text, target)
+
+    @staticmethod
+    def _validate_response_status(response) -> None:
         if 300 <= response.status_code < 400:
             raise PageStructureError("redirected platform response")
         if response.status_code in {403, 429}:
@@ -90,7 +110,6 @@ class MaoyanAdapter:
             raise TemporaryPlatformError("platform server error")
         if response.status_code != 200:
             raise TemporaryPlatformError("unexpected platform status")
-        return self.parse_html(response.text, target)
 
     def parse_html(self, html: str, target: ParsedTarget) -> CheckResult:
         soup = BeautifulSoup(html, "html.parser")
@@ -100,23 +119,23 @@ class MaoyanAdapter:
         body = soup.body
         if body is None:
             raise PageStructureError("response has no page body")
-        if body.get("data-city") != target.city_name:
-            raise PageStructureError("response city does not match target")
-        if body.get("data-movie-id") != target.movie_id:
-            raise PageStructureError("response movie does not match target")
-        movie_name = body.get("data-movie-name", "").strip()
-        if not movie_name:
-            raise PageStructureError("response movie name is missing")
+        legacy_markers = (
+            body.get("data-city"),
+            body.get("data-movie-id"),
+            body.get("data-movie-name"),
+        )
+        if any(marker is not None for marker in legacy_markers):
+            movie_name, cinema_root = self._parse_legacy_context(soup, body, target)
+        else:
+            movie_name, cinema_root = self._parse_live_context(soup, target)
 
-        active_dates = soup.select(".date-item.active[data-date]")
-        if len(active_dates) != 1 or active_dates[0]["data-date"] != target.show_date.isoformat():
-            raise PageStructureError("response date does not match target")
-
-        cinema_cells = soup.select(".cinema-cell")
-        no_cinemas = soup.select_one(".no-cinemas")
+        cinema_cells = cinema_root.select(".cinema-cell")
+        no_cinemas = cinema_root.select(".no-cinemas")
         if cinema_cells and no_cinemas:
             raise PageStructureError("response has conflicting list structures")
-        if no_cinemas is not None:
+        if len(no_cinemas) > 1:
+            raise PageStructureError("response has ambiguous empty-list structure")
+        if no_cinemas:
             cinemas: tuple[CinemaAvailability, ...] = ()
         elif cinema_cells:
             cinemas = tuple(self._parse_cinema_cell(cell, target) for cell in cinema_cells)
@@ -130,6 +149,59 @@ class MaoyanAdapter:
             cinemas=cinemas,
             content_fingerprint=hashlib.sha256(html.encode("utf-8")).hexdigest(),
         )
+
+    @staticmethod
+    def _parse_legacy_context(soup, body, target: ParsedTarget):
+        if body.get("data-city") != target.city_name:
+            raise PageStructureError("response city does not match target")
+        if body.get("data-movie-id") != target.movie_id:
+            raise PageStructureError("response movie does not match target")
+        movie_name = body.get("data-movie-name", "").strip()
+        if not movie_name:
+            raise PageStructureError("response movie name is missing")
+
+        active_dates = soup.select(".date-item.active[data-date]")
+        if len(active_dates) != 1 or active_dates[0]["data-date"] != target.show_date.isoformat():
+            raise PageStructureError("response date does not match target")
+        return movie_name, soup
+
+    @staticmethod
+    def _parse_live_context(soup, target: ParsedTarget):
+        city_containers = soup.select(".city-container[data-val]")
+        selected_cities = soup.select(".city-selected")
+        movie_names = soup.select(".movie-brief-container h1.name")
+        movie_actions = soup.select(".action[data-val]")
+        active_dates = soup.select("a.active[data-val]")
+        cinema_lists = soup.select(".cinemas-list")
+        if not all(
+            len(nodes) == 1
+            for nodes in (
+                city_containers,
+                selected_cities,
+                movie_names,
+                movie_actions,
+                active_dates,
+                cinema_lists,
+            )
+        ):
+            raise PageStructureError("response has ambiguous live page context")
+
+        city_match = CITY_ID_PATTERN.fullmatch(city_containers[0]["data-val"])
+        movie_match = MOVIE_ID_PATTERN.fullmatch(movie_actions[0]["data-val"])
+        date_match = SHOW_DATE_PATTERN.fullmatch(active_dates[0]["data-val"])
+        city_name = selected_cities[0].get_text(" ", strip=True)
+        movie_name = movie_names[0].get_text(" ", strip=True)
+        if city_match is None or int(city_match.group(1)) != target.city_id:
+            raise PageStructureError("response city ID does not match target")
+        if city_name != target.city_name:
+            raise PageStructureError("response city does not match target")
+        if movie_match is None or movie_match.group(1) != target.movie_id:
+            raise PageStructureError("response movie does not match target")
+        if not movie_name:
+            raise PageStructureError("response movie name is missing")
+        if date_match is None or date_match.group(1) != target.show_date.isoformat():
+            raise PageStructureError("response date does not match target")
+        return movie_name, cinema_lists[0]
 
     @staticmethod
     def _validate_url_parts(parsed) -> None:
@@ -173,18 +245,33 @@ class MaoyanAdapter:
         return show_date
 
     def _parse_cinema_cell(self, cell, target: ParsedTarget) -> CinemaAvailability:
-        name_link = cell.select_one("a.cinema-name[href]")
-        if name_link is None:
+        name_links = cell.select("a.cinema-name[href]")
+        if len(name_links) != 1:
             raise PageStructureError("cinema cell has no cinema name")
+        name_link = name_links[0]
         name = name_link.get_text(" ", strip=True)
         cinema_id = self._cinema_id_from_path(name_link["href"])
         if not name or cinema_id is None:
             raise PageStructureError("cinema cell has invalid identity")
 
         booking_url = ""
-        buy_link = cell.select_one("a.buy-btn[href]")
-        if buy_link is not None and buy_link.get_text(" ", strip=True) == "选座购票":
-            booking_url = self._validated_booking_url(buy_link["href"], cinema_id, target)
+        booking_controls = cell.select(".buy-btn")
+        if len(booking_controls) > 1:
+            raise PageStructureError("cinema cell has ambiguous booking controls")
+        if booking_controls:
+            control = booking_controls[0]
+            links = [control] if control.name == "a" else control.select("a")
+            labelled_links = [
+                link for link in links if link.get_text(" ", strip=True) == "选座购票"
+            ]
+            has_booking_label = control.get_text(" ", strip=True) == "选座购票"
+            if has_booking_label or labelled_links:
+                if len(labelled_links) != 1 or not labelled_links[0].get("href"):
+                    raise PageStructureError("cinema cell has invalid booking control")
+                buy_link = labelled_links[0]
+                booking_url = self._validated_booking_url(buy_link["href"], cinema_id, target)
+                if not booking_url:
+                    raise PageStructureError("cinema cell has invalid booking URL")
         return CinemaAvailability(
             cinema_id=cinema_id,
             name=name,
@@ -223,12 +310,15 @@ class MaoyanAdapter:
         parameters = parse_qsl(parsed.query, keep_blank_values=True)
         if len(parameters) != len(set(key for key, _ in parameters)):
             return ""
-        values = dict(parameters)
-        if (
-            values.get("movieId") != target.movie_id
-            or values.get("showDate") != target.show_date.isoformat()
-        ):
+        values = {key: value for key, value in parameters if key in BOOKING_PARAMETERS}
+        if values.get("movieId") != target.movie_id:
             return ""
+        show_date = values.get("showDate")
+        if show_date is not None and show_date != target.show_date.isoformat():
+            return ""
+        if "poi" in values and not values["poi"].isdigit():
+            return ""
+        values["showDate"] = target.show_date.isoformat()
         return urlunsplit(
-            ("https", parsed.hostname.lower(), parsed.path, urlencode(sorted(parameters)), "")
+            ("https", parsed.hostname.lower(), parsed.path, urlencode(sorted(values.items())), "")
         )

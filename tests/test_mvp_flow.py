@@ -361,6 +361,12 @@ def test_mocked_local_flow_sends_one_opening_mail_and_completes(
     smtp_ssl.return_value.send_message.return_value = {}
     responses.add(
         responses.GET,
+        "https://www.maoyan.com/",
+        status=200,
+        headers={"Set-Cookie": "uuid=safe-flow-fixture; Path=/"},
+    )
+    responses.add(
+        responses.GET,
         VALID_URL,
         body=(FIXTURE_DIR / "open.html").read_text(),
         status=200,

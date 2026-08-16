@@ -251,6 +251,7 @@ def _result_matches_task(result, task):
     target = result.target
     return bool(
         result.valid_page
+        and result.movie_name == task.movie_name
         and target.platform == "maoyan"
         and target.city_id == task.city_id
         and target.city_name == task.city_name

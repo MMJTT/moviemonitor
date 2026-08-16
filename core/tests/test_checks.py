@@ -192,6 +192,27 @@ def test_unproven_page_context_never_detects(active_task, mocker, valid_page, ci
 
 
 @pytest.mark.django_db
+def test_changed_movie_name_never_detects(active_task, mocker):
+    """Ignoring a movie-name change after preview must fail this test."""
+    result = result_for(active_task, active_task.cinema_name, True)
+    result = CheckResult(
+        target=result.target,
+        movie_name="同一 ID 下的错误电影名",
+        valid_page=result.valid_page,
+        cinemas=result.cinemas,
+        content_fingerprint=result.content_fingerprint,
+    )
+    mocker.patch("core.services.tasks.MaoyanAdapter.fetch", return_value=result)
+
+    check = perform_check(active_task.pk)
+
+    active_task.refresh_from_db()
+    assert check.status == CheckRun.Status.STRUCTURE_ERROR
+    assert active_task.status == MonitorTask.Status.MONITORING
+    assert not Notification.objects.exists()
+
+
+@pytest.mark.django_db
 @pytest.mark.parametrize(
     ("error", "expected_status", "expected_code"),
     [
