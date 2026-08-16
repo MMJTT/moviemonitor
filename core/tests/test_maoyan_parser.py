@@ -335,20 +335,84 @@ def test_fetch_bootstraps_session_then_sends_city_cookie_to_validated_target(ada
     assert responses.calls[1].request.headers["Cookie"] == "uuid=safe-fixture-cookie; ci=10"
 
 
-@pytest.mark.parametrize("stage", ["bootstrap", "target"])
 @responses.activate
-def test_fetch_rejects_redirects_without_following_location(adapter, target, stage):
-    """Following a redirect at either request boundary must fail this test."""
-    if stage == "bootstrap":
-        _add_bootstrap_response(status=302, headers={"Location": "https://example.com/"})
-    else:
-        _add_bootstrap_response()
-        responses.add(
-            responses.GET,
-            target.normalized_url,
+def test_fetch_retries_one_safe_bootstrap_self_redirect(adapter, target):
+    """Rejecting the bounded cookie-setting self-redirect must fail this test."""
+    _add_bootstrap_response(
+        status=302,
+        headers={
+            "Location": "https://www.maoyan.com/",
+            "Set-Cookie": "uuid=safe-first-hop; Path=/",
+        },
+    )
+    _add_bootstrap_response(
+        status=200,
+        headers={"Set-Cookie": "_csrf=safe-second-hop; Path=/"},
+    )
+    responses.add(responses.GET, target.normalized_url, body=read_fixture("open.html"), status=200)
+
+    result = adapter.fetch(target)
+
+    assert result.cinemas[0].bookable is True
+    assert [call.request.url for call in responses.calls] == [
+        "https://www.maoyan.com/",
+        "https://www.maoyan.com/",
+        target.normalized_url,
+    ]
+    target_cookie = responses.calls[2].request.headers["Cookie"]
+    assert "uuid=safe-first-hop" in target_cookie
+    assert "_csrf=safe-second-hop" in target_cookie
+    assert "ci=10" in target_cookie
+
+
+@responses.activate
+def test_fetch_rejects_a_second_bootstrap_self_redirect(adapter, target):
+    """Adding an unbounded or second bootstrap retry must fail this test."""
+    for _ in range(2):
+        _add_bootstrap_response(
             status=302,
-            headers={"Location": "https://example.com/"},
+            headers={"Location": "https://www.maoyan.com/"},
         )
+
+    with pytest.raises(PageStructureError):
+        adapter.fetch(target)
+
+    assert len(responses.calls) == 2
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "https://example.com/",
+        "https://www.maoyan.com/cinemas",
+        "https://www.maoyan.com/?source=redirect",
+        "https://www.maoyan.com/#fragment",
+        "https://user@www.maoyan.com/",
+        "https://www.maoyan.com:443/",
+        "http://www.maoyan.com/",
+    ],
+)
+@responses.activate
+def test_fetch_rejects_unsafe_bootstrap_redirect_locations(adapter, target, location):
+    """Relaxing any component of the exact bootstrap self-location must fail this test."""
+    _add_bootstrap_response(status=302, headers={"Location": location})
+
+    with pytest.raises(PageStructureError):
+        adapter.fetch(target)
+
+    assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_fetch_rejects_target_redirect_without_following_location(adapter, target):
+    """Allowing the bootstrap exception to weaken target redirects must fail this test."""
+    _add_bootstrap_response()
+    responses.add(
+        responses.GET,
+        target.normalized_url,
+        status=302,
+        headers={"Location": "https://example.com/"},
+    )
 
     with pytest.raises(PageStructureError):
         adapter.fetch(target)

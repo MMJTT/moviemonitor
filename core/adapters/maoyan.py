@@ -87,6 +87,13 @@ class MaoyanAdapter:
                 timeout=15,
                 allow_redirects=False,
             )
+            if self._is_safe_bootstrap_self_redirect(bootstrap_response):
+                bootstrap_response = self.session.get(
+                    BOOTSTRAP_URL,
+                    headers={"User-Agent": DESKTOP_USER_AGENT},
+                    timeout=15,
+                    allow_redirects=False,
+                )
             self._validate_response_status(bootstrap_response)
             response = self.session.get(
                 target.normalized_url,
@@ -100,6 +107,30 @@ class MaoyanAdapter:
 
         self._validate_response_status(response)
         return self.parse_html(response.text, target)
+
+    @staticmethod
+    def _is_safe_bootstrap_self_redirect(response) -> bool:
+        if not 300 <= response.status_code < 400:
+            return False
+        location = response.headers.get("Location")
+        if not location:
+            return False
+        try:
+            parsed = urlsplit(urljoin(BOOTSTRAP_URL, location))
+            port = parsed.port
+        except ValueError:
+            return False
+        return bool(
+            parsed.scheme == "https"
+            and parsed.hostname is not None
+            and parsed.hostname.lower() == "www.maoyan.com"
+            and parsed.username is None
+            and parsed.password is None
+            and port is None
+            and parsed.path == "/"
+            and not parsed.query
+            and not parsed.fragment
+        )
 
     @staticmethod
     def _validate_response_status(response) -> None:
