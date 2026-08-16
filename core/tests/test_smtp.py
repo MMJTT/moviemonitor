@@ -1,3 +1,4 @@
+import smtplib
 from email.message import EmailMessage
 from smtplib import SMTPAuthenticationError
 from unittest.mock import patch
@@ -9,7 +10,7 @@ from django.utils import timezone
 from core.crypto import decrypt_secret, encrypt_secret
 from core.forms import SMTPConfigForm
 from core.models import SMTPConfig
-from core.services.smtp import send_message
+from core.services.smtp import _connect, send_message
 
 
 @pytest.mark.django_db
@@ -158,3 +159,34 @@ def test_send_message_closes_connection_when_quit_fails(smtp_ssl):
 
     assert send_message(config, message) == "{}"
     smtp_ssl.return_value.close.assert_called_once_with()
+
+
+@patch("core.services.smtp.smtplib.SMTP_SSL")
+@patch("core.services.smtp.ssl.create_default_context")
+def test_ssl_connection_uses_verified_default_context(create_default_context, smtp_ssl):
+    """Dropping certificate and hostname verification from SSL connections must fail this test."""
+    config = SMTPConfig(host="smtp.163.com", port=465, security=SMTPConfig.Security.SSL)
+    verified_context = object()
+    create_default_context.return_value = verified_context
+
+    _connect(config)
+
+    create_default_context.assert_called_once_with()
+    smtp_ssl.assert_called_once_with(
+        "smtp.163.com",
+        465,
+        timeout=15,
+        context=verified_context,
+    )
+
+
+@patch("core.services.smtp.smtplib.SMTP")
+def test_starttls_failure_closes_open_connection(smtp):
+    """Leaving a socket open when STARTTLS negotiation fails must fail this test."""
+    config = SMTPConfig(host="smtp.163.com", port=587, security=SMTPConfig.Security.STARTTLS)
+    smtp.return_value.starttls.side_effect = smtplib.SMTPException("TLS handshake failed")
+
+    with pytest.raises(smtplib.SMTPException):
+        send_message(config, EmailMessage())
+
+    smtp.return_value.close.assert_called_once_with()

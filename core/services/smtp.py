@@ -15,10 +15,22 @@ def sanitize_smtp_error(exc):
 
 def _connect(config):
     if config.security == SMTPConfig.Security.SSL:
-        return smtplib.SMTP_SSL(config.host, config.port, timeout=15)
+        return smtplib.SMTP_SSL(
+            config.host,
+            config.port,
+            timeout=15,
+            context=ssl.create_default_context(),
+        )
 
     connection = smtplib.SMTP(config.host, config.port, timeout=15)
-    connection.starttls(context=ssl.create_default_context())
+    try:
+        connection.starttls(context=ssl.create_default_context())
+    except Exception:
+        try:
+            connection.close()
+        except OSError:
+            pass
+        raise
     return connection
 
 
