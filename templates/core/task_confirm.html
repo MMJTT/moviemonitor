@@ -3,28 +3,40 @@
 {% block title %}确认监控任务 · TicketWatch{% endblock %}
 
 {% block content %}
-  <header class="page-heading">
-    <p class="eyebrow">确认唯一目标影院</p>
-    <h1>确认监控任务</h1>
+  <header class="page-heading split-heading">
+    <div>
+      <p class="eyebrow">Target cinema</p>
+      <h1>确认监控任务</h1>
+    </div>
     {% if payload %}
-      <p>{{ payload.movie_name }} · {{ payload.show_date }} · {{ payload.city_name }}</p>
+      <div class="heading-ticket"><strong>{{ payload.movie_name }}</strong><span>{{ payload.show_date }}</span><span>{{ payload.city_name }}</span></div>
     {% endif %}
   </header>
-  <section class="form-card">
+  <section class="form-layout">
+    <aside class="form-context steps-context" aria-label="创建步骤">
+      <ol><li><span>01</span>填写目标</li><li class="is-active"><span>02</span>选择影院</li><li><span>03</span>开始监控</li></ol>
+    </aside>
+    <div class="form-card">
     <form method="post" action="{% url 'core:task-confirm' %}">
       {% csrf_token %}
       {{ form.signed_preview }}
       {% if payload.cinemas %}
         <fieldset>
-          <legend>当前可见影院</legend>
+          <legend>当前可见影院 <small>选择一家</small></legend>
           {% for cinema in payload.cinemas %}
             <label class="choice"><input type="radio" name="cinema_id" value="{{ cinema.id }}">{{ cinema.name }}</label>
           {% endfor %}
         </fieldset>
       {% endif %}
-      <p>{{ form.manual_cinema_name.label_tag }} {{ form.manual_cinema_name }}</p>
-      {{ form.non_field_errors }}
+      <div class="field">
+        <div class="field-label-row">{{ form.manual_cinema_name.label_tag }}</div>
+        {{ form.manual_cinema_name }}
+        {% if form.manual_cinema_name.help_text %}<div class="helptext">{{ form.manual_cinema_name.help_text }}</div>{% endif %}
+        {% if form.manual_cinema_name.errors %}<div class="field-errors" role="alert">{{ form.manual_cinema_name.errors }}</div>{% endif %}
+      </div>
+      {% if form.non_field_errors %}<div class="form-errors" role="alert">{{ form.non_field_errors }}</div>{% endif %}
       <button class="button-primary" type="submit">创建监控任务</button>
     </form>
+    </div>
   </section>
 {% endblock %}

@@ -118,6 +118,7 @@ USE_TZ = True
 
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+STATICFILES_DIRS = [BASE_DIR / "static"]
 
 TICKETWATCH_KEY_FILE = Path(
     os.environ.get("TICKETWATCH_KEY_FILE", BASE_DIR / ".ticketwatch.key")

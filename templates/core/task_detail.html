@@ -3,11 +3,11 @@
 {% block title %}{{ task.movie_name }} · TicketWatch{% endblock %}
 
 {% block content %}
-  <header class="page-heading task-heading">
+  <header class="page-heading task-heading detail-heading">
     <div>
-      <p class="eyebrow">任务详情</p>
+      <p class="eyebrow">Watch details</p>
       <h1>{{ task.movie_name }}</h1>
-      <p>{{ task.show_date|date:"Y年n月j日" }} · {{ task.city_name }} · {{ task.cinema_name }}</p>
+      <div class="target-line"><span>{{ task.show_date|date:"Y年n月j日" }}</span><span>{{ task.city_name }}</span><span>{{ task.cinema_name }}</span></div>
     </div>
     <span class="status status-{{ task.status|lower }}">{{ task.get_status_display }}</span>
   </header>
@@ -17,7 +17,7 @@
       <h2>监控状态</h2>
       <dl class="fact-list">
         <div><dt>上次检查</dt><dd>{{ task.last_checked_at|date:"Y-m-d H:i:s"|default:"尚未检查" }}</dd></div>
-        <div><dt>下次检查</dt><dd>{{ task.next_check_at|date:"Y-m-d H:i:s"|default:"—" }}</dd></div>
+        <div><dt>下次检查</dt><dd>{{ task.next_check_at|date:"Y-m-d H:i:s"|default:"未安排" }}</dd></div>
         <div><dt>连续异常</dt><dd>{{ task.consecutive_failures }} 次</dd></div>
         {% if task.detected_at %}<div><dt>检测开票</dt><dd>{{ task.detected_at|date:"Y-m-d H:i:s" }}</dd></div>{% endif %}
         {% if task.completed_at %}<div><dt>完成时间</dt><dd>{{ task.completed_at|date:"Y-m-d H:i:s" }}</dd></div>{% endif %}
@@ -61,7 +61,7 @@
                 <td>{{ check.started_at|date:"Y-m-d H:i:s" }}</td>
                 <td>{{ check.get_status_display }}</td>
                 <td>{{ check.cinema_count }}</td>
-                <td>{{ check.error_summary|default:"—" }}</td>
+                <td>{{ check.error_summary|default:"无" }}</td>
               </tr>
             {% endfor %}
           </tbody>
@@ -88,7 +88,7 @@
                 <td>{{ item.get_notification_type_display }}</td>
                 <td>{{ item.get_status_display }}</td>
                 <td>{{ item.retry_count }}</td>
-                <td>{{ item.last_error|default:"—" }}</td>
+                <td>{{ item.last_error|default:"无" }}</td>
               </tr>
             {% endfor %}
           </tbody>

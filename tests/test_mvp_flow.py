@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 import responses
+from django.contrib.staticfiles import finders
 from django.urls import reverse
 from django.utils import timezone
 from freezegun import freeze_time
@@ -347,6 +348,30 @@ def test_primary_pages_share_local_navigation_and_stylesheet(client, verified_sm
         assert reverse("core:settings") in body
         assert "/static/css/app.css" in body
         assert "cdn" not in body.casefold()
+
+
+def test_local_design_assets_are_discoverable_by_django():
+    """The local server must be able to serve the design system without a CDN."""
+    assert finders.find("css/app.css")
+    assert finders.find("favicon.svg")
+
+
+@pytest.mark.django_db
+def test_primary_pages_expose_accessible_navigation_state(client, verified_smtp):
+    """Every page needs a skip link and a programmatic current navigation item."""
+    expected = {
+        "core:dashboard": "仪表盘",
+        "core:task-preview": "新建任务",
+        "core:smtp-edit": "SMTP",
+        "core:settings": "设置",
+    }
+
+    for route_name, label in expected.items():
+        body = client.get(reverse(route_name)).content.decode()
+        assert 'class="skip-link"' in body
+        assert 'id="main-content"' in body
+        assert f'aria-current="page">{label}</a>' in body
+        assert '/static/favicon.svg' in body
 
 
 @pytest.mark.django_db(transaction=True)

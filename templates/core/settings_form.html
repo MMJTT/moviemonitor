@@ -3,16 +3,25 @@
 {% block title %}轮询设置 · TicketWatch{% endblock %}
 
 {% block content %}
-  <header class="page-heading">
-    <p class="eyebrow">本地监控设置</p>
-    <h1>轮询间隔</h1>
+  <header class="page-heading split-heading">
+    <div>
+      <p class="eyebrow">Monitoring cadence</p>
+      <h1>轮询间隔</h1>
+    </div>
     <p>间隔越短，请求越频繁。为降低平台压力，最短间隔固定为 60 秒。</p>
   </header>
-  <section class="form-card">
+  <section class="form-layout">
+    <aside class="form-context" aria-label="设置说明">
+      <span class="context-number">60</span>
+      <strong>秒起步</strong>
+      <p>一个清晰、可控的检查频率。修改后会应用到后续调度。</p>
+    </aside>
+    <div class="form-card">
     <form method="post">
       {% csrf_token %}
-      {{ form.as_p }}
+      {% include "core/_form_fields.html" %}
       <button class="button-primary" type="submit">保存设置</button>
     </form>
+    </div>
   </section>
 {% endblock %}

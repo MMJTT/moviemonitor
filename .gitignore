@@ -7,6 +7,8 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+.playwright-cli/
+output/
 staticfiles/
 media/
 backups/
