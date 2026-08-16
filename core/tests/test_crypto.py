@@ -2,6 +2,7 @@ import os
 
 import pytest
 
+from core import crypto
 from core.crypto import CredentialKeyError, decrypt_secret, encrypt_secret
 
 
@@ -22,3 +23,26 @@ def test_missing_key_does_not_replace_existing_ciphertext(settings, tmp_path):
 
     with pytest.raises(CredentialKeyError, match="missing"):
         decrypt_secret(token)
+
+
+def test_windows_rejects_encryption_before_creating_a_key(settings, tmp_path, monkeypatch):
+    key_path = tmp_path / ".ticketwatch.key"
+    settings.TICKETWATCH_KEY_FILE = key_path
+    monkeypatch.setattr(crypto, "_supports_private_key_permissions", lambda: False, raising=False)
+
+    with pytest.raises(CredentialKeyError, match="Windows"):
+        encrypt_secret("authorization-code")
+
+    assert not key_path.exists()
+
+
+def test_windows_rejects_decryption_before_reading_an_existing_key(settings, tmp_path, monkeypatch):
+    key_path = tmp_path / ".ticketwatch.key"
+    key_path.write_bytes(b"not a valid Fernet key")
+    settings.TICKETWATCH_KEY_FILE = key_path
+    monkeypatch.setattr(crypto, "_supports_private_key_permissions", lambda: False, raising=False)
+
+    with pytest.raises(CredentialKeyError, match="Windows"):
+        decrypt_secret("invalid-ciphertext")
+
+    assert key_path.read_bytes() == b"not a valid Fernet key"

@@ -9,7 +9,14 @@ class CredentialKeyError(RuntimeError):
     pass
 
 
+def _supports_private_key_permissions():
+    return os.name != "nt"
+
+
 def _load_key(create):
+    if not _supports_private_key_permissions():
+        raise CredentialKeyError("credential key storage is not supported on Windows")
+
     path = Path(settings.TICKETWATCH_KEY_FILE)
     try:
         return path.read_bytes()
