@@ -1,0 +1,33 @@
+{% load static %}
+<!doctype html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>{% block title %}TicketWatch{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'css/app.css' %}">
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="brand" href="{% url 'core:dashboard' %}" aria-label="TicketWatch 首页">
+          <span class="brand-mark" aria-hidden="true">票</span>
+          <span>TicketWatch</span>
+        </a>
+        <nav aria-label="主导航">
+          <a href="{% url 'core:dashboard' %}">仪表盘</a>
+          <a href="{% url 'core:task-preview' %}">新建任务</a>
+          <a href="{% url 'core:smtp-edit' %}">SMTP</a>
+          <a href="{% url 'core:settings' %}">设置</a>
+        </nav>
+      </div>
+    </header>
+    <main class="shell page-stack">
+      {% block content %}{% endblock %}
+    </main>
+    <footer class="shell site-footer">
+      <p>仅在本机 127.0.0.1 运行 · 关闭终端进程会停止监控</p>
+    </footer>
+  </body>
+</html>

@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block title %}轮询设置 · TicketWatch{% endblock %}
+
+{% block content %}
+  <header class="page-heading">
+    <p class="eyebrow">本地监控设置</p>
+    <h1>轮询间隔</h1>
+    <p>间隔越短，请求越频繁。为降低平台压力，最短间隔固定为 60 秒。</p>
+  </header>
+  <section class="form-card">
+    <form method="post">
+      {% csrf_token %}
+      {{ form.as_p }}
+      <button class="button-primary" type="submit">保存设置</button>
+    </form>
+  </section>
+{% endblock %}

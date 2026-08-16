@@ -1,0 +1,359 @@
+from datetime import timedelta
+from pathlib import Path
+
+import pytest
+import responses
+from django.urls import reverse
+from django.utils import timezone
+from freezegun import freeze_time
+
+from core.crypto import decrypt_secret
+from core.models import AppSetting, CheckRun, MonitorTask, Notification, SMTPConfig
+from core.scheduler import run_due_work, set_process_scheduler
+
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "maoyan"
+VALID_URL = "https://www.maoyan.com/cinemas?movieId=1545360&showDate=2026-08-20"
+
+
+class RecordingScheduler:
+    def __init__(self):
+        self.wake_count = 0
+
+    def wake(self):
+        self.wake_count += 1
+
+
+@pytest.fixture
+def task_factory(db):
+    def create(**overrides):
+        values = {
+            "source_url": (
+                "https://www.maoyan.com/cinemas?movieId=1545360&showDate=2026-08-20"
+            ),
+            "normalized_url": (
+                "https://www.maoyan.com/cinemas?movieId=1545360&showDate=2026-08-20"
+            ),
+            "query_key": "maoyan:10:fixture",
+            "city_id": 10,
+            "city_name": "上海",
+            "movie_id": "1545360",
+            "movie_name": "奥德赛",
+            "show_date": timezone.localdate() + timedelta(days=1),
+            "cinema_name": "MOViE MOViE 影城（前滩太古里店）",
+            "normalized_cinema_name": "movie movie 影城(前滩太古里店)",
+            "status": MonitorTask.Status.MONITORING,
+            "next_check_at": timezone.now(),
+        }
+        values.update(overrides)
+        return MonitorTask.objects.create(**values)
+
+    return create
+
+
+@pytest.fixture
+def active_task(task_factory):
+    return task_factory()
+
+
+@pytest.fixture
+def verified_smtp(db):
+    config = SMTPConfig.get_solo()
+    config.host = "smtp.example.com"
+    config.username = config.from_email = "sender@example.com"
+    config.recipient_email = "receiver@example.com"
+    config.encrypted_password = "test-ciphertext"
+    config.is_verified = True
+    config.save()
+    return config
+
+
+@pytest.fixture(autouse=True)
+def clear_process_scheduler():
+    set_process_scheduler(None)
+    yield
+    set_process_scheduler(None)
+
+
+@pytest.mark.django_db
+def test_dashboard_guides_first_run_to_smtp(client):
+    """Removing the SMTP prerequisite guidance would strand a first-time user."""
+    response = client.get(reverse("core:dashboard"))
+
+    body = response.content.decode()
+    assert response.status_code == 200
+    assert "先配置并测试 SMTP" in body
+    assert reverse("core:smtp-edit") in body
+
+
+@pytest.mark.django_db
+def test_dashboard_guides_verified_user_to_new_task(client, verified_smtp):
+    """Hiding the next step after SMTP verification would break the local setup flow."""
+    body = client.get(reverse("core:dashboard")).content.decode()
+
+    assert "创建监控任务" in body
+    assert reverse("core:task-preview") in body
+
+
+@pytest.mark.django_db
+def test_unverified_user_opening_new_task_is_guided_to_smtp(client):
+    """A raw forbidden page on first-run navigation would break the guided setup flow."""
+    response = client.get(reverse("core:task-preview"))
+
+    assert response.status_code == 302
+    assert response.url == reverse("core:smtp-edit")
+
+
+@pytest.mark.django_db
+def test_dashboard_shows_active_task_status_and_allowed_actions(client, active_task):
+    """Dropping live state or controls would make the active monitor unmanageable."""
+    active_task.last_error = "猫眼页面结构无法验证"
+    active_task.save(update_fields=["last_error"])
+
+    body = client.get(reverse("core:dashboard")).content.decode()
+
+    assert active_task.movie_name in body
+    assert active_task.cinema_name in body
+    assert active_task.get_status_display() in body
+    assert "猫眼页面结构无法验证" in body
+    assert reverse("core:task-detail", args=[active_task.pk]) in body
+    assert reverse("core:task-pause", args=[active_task.pk]) in body
+    assert reverse("core:task-run-now", args=[active_task.pk]) in body
+    assert reverse("core:task-cancel", args=[active_task.pk]) in body
+    assert reverse("core:task-resume", args=[active_task.pk]) not in body
+
+
+@pytest.mark.django_db
+def test_dashboard_shows_terminal_outcome_and_new_task_action(
+    client, verified_smtp, task_factory
+):
+    """Treating a terminal task as active would prevent the next monitor from being created."""
+    task = task_factory(status=MonitorTask.Status.COMPLETED, next_check_at=None)
+
+    body = client.get(reverse("core:dashboard")).content.decode()
+
+    assert task.get_status_display() in body
+    assert "创建新的监控任务" in body
+    assert reverse("core:task-preview") in body
+    assert reverse("core:task-pause", args=[task.pk]) not in body
+
+
+@pytest.mark.django_db
+def test_poll_interval_form_rejects_fifty_nine(client):
+    """Accepting a sub-minute interval would violate the platform safety floor."""
+    response = client.post(
+        reverse("core:settings"),
+        {"poll_interval_seconds": 59},
+    )
+
+    assert response.status_code == 200
+    assert "轮询间隔不能低于 60 秒" in response.content.decode()
+    assert AppSetting.get_solo().poll_interval_seconds == 60
+
+
+@pytest.mark.django_db
+def test_saving_poll_interval_reschedules_monitoring_task_and_wakes_scheduler(
+    client, active_task, mocker, django_capture_on_commit_callbacks
+):
+    """Keeping the old due time would delay application of a newly saved interval."""
+    now = timezone.now()
+    active_task.next_check_at = now - timedelta(minutes=1)
+    active_task.save(update_fields=["next_check_at"])
+    scheduler = RecordingScheduler()
+    set_process_scheduler(scheduler)
+    mocker.patch("core.views.timezone.now", return_value=now)
+
+    with django_capture_on_commit_callbacks(execute=True):
+        response = client.post(
+            reverse("core:settings"),
+            {"poll_interval_seconds": 180},
+        )
+
+    active_task.refresh_from_db()
+    assert response.status_code == 302
+    assert response.url == reverse("core:settings")
+    assert AppSetting.get_solo().poll_interval_seconds == 180
+    assert active_task.next_check_at == now + timedelta(seconds=180)
+    assert scheduler.wake_count == 1
+
+
+@pytest.mark.django_db
+def test_task_detail_shows_only_twenty_newest_checks_and_notifications(
+    client, active_task
+):
+    """An unbounded or oldest-first history would obscure recent monitor evidence."""
+    now = timezone.now()
+    for index in range(21):
+        CheckRun.objects.create(
+            task=active_task,
+            status=CheckRun.Status.SUCCEEDED,
+            started_at=now + timedelta(seconds=index),
+            finished_at=now + timedelta(seconds=index),
+            error_summary=f"检查-{index}",
+        )
+    for index in range(21):
+        terminal_task = active_task if index < 2 else None
+        if terminal_task is None:
+            break
+        Notification.objects.create(
+            task=terminal_task,
+            notification_type=(
+                Notification.Type.OPENING if index == 0 else Notification.Type.EXPIRY
+            ),
+            last_error=f"通知-{index}",
+        )
+
+    body = client.get(reverse("core:task-detail", args=[active_task.pk])).content.decode()
+
+    assert "最近检查" in body
+    assert "通知记录" in body
+    assert "检查-20" in body
+    assert "检查-1" in body
+    assert "检查-0" not in body
+    assert "通知-0" in body
+    assert "通知-1" in body
+
+
+@pytest.mark.django_db
+def test_task_detail_never_renders_sensitive_or_full_payload_fields(client, active_task):
+    """Rendering storage-only payload fields could disclose remote or SMTP content."""
+    check = CheckRun.objects.create(
+        task=active_task,
+        status=CheckRun.Status.STRUCTURE_ERROR,
+        started_at=timezone.now(),
+        finished_at=timezone.now(),
+        content_fingerprint="response-fingerprint-private",
+        error_summary="安全的检查摘要",
+    )
+    notification = Notification.objects.create(
+        task=active_task,
+        notification_type=Notification.Type.OPENING,
+        smtp_response="smtp-response-private",
+        last_error="安全的通知摘要",
+    )
+
+    body = client.get(reverse("core:task-detail", args=[active_task.pk])).content.decode()
+
+    assert check.error_summary in body
+    assert notification.last_error in body
+    assert check.content_fingerprint not in body
+    assert notification.smtp_response not in body
+
+
+@pytest.mark.django_db
+def test_task_detail_warns_that_sending_notification_result_is_uncertain(
+    client, active_task
+):
+    """Omitting crash-recovery uncertainty could prompt unsafe manual duplicate delivery."""
+    active_task.status = MonitorTask.Status.DETECTED
+    active_task.next_check_at = None
+    active_task.save(update_fields=["status", "next_check_at"])
+    Notification.objects.create(
+        task=active_task,
+        notification_type=Notification.Type.OPENING,
+        status=Notification.Status.SENDING,
+    )
+
+    body = client.get(reverse("core:task-detail", args=[active_task.pk])).content.decode()
+
+    assert "发送结果不确定" in body
+    assert "不会自动重发" in body
+
+
+@pytest.mark.django_db
+def test_primary_pages_share_local_navigation_and_stylesheet(client, verified_smtp):
+    """Standalone pages without local navigation or styling would fragment the workflow."""
+    for route_name in ("core:dashboard", "core:smtp-edit", "core:task-preview", "core:settings"):
+        body = client.get(reverse(route_name)).content.decode()
+        assert reverse("core:dashboard") in body
+        assert reverse("core:smtp-edit") in body
+        assert reverse("core:settings") in body
+        assert "/static/css/app.css" in body
+        assert "cdn" not in body.casefold()
+
+
+@pytest.mark.django_db(transaction=True)
+@freeze_time("2026-08-16 04:00:00")
+@responses.activate
+def test_mocked_local_flow_sends_one_opening_mail_and_completes(
+    client, settings, tmp_path, mocker, django_capture_on_commit_callbacks
+):
+    """Breaking any closed-loop boundary must stop completion or duplicate the opening mail."""
+    settings.TICKETWATCH_KEY_FILE = tmp_path / ".ticketwatch.key"
+    smtp_ssl = mocker.patch("core.services.smtp.smtplib.SMTP_SSL")
+    smtp_ssl.return_value.send_message.return_value = {}
+    responses.add(
+        responses.GET,
+        VALID_URL,
+        body=(FIXTURE_DIR / "open.html").read_text(),
+        status=200,
+    )
+
+    smtp_page = client.get(reverse("core:smtp-edit")).content.decode()
+    assert "smtp.qq.com" in smtp_page
+    assert "SSL" in smtp_page
+    assert "465" in smtp_page
+
+    smtp_response = client.post(
+        reverse("core:smtp-edit"),
+        {
+            "host": "smtp.qq.com",
+            "port": 465,
+            "security": SMTPConfig.Security.SSL,
+            "username": "ticketwatch-test@qq.com",
+            "from_email": "ticketwatch-test@qq.com",
+            "recipient_email": "ticketwatch-test@qq.com",
+            "authorization_code": "local-test-authorization-code",
+        },
+        follow=True,
+    )
+
+    config = SMTPConfig.get_solo()
+    assert smtp_response.status_code == 200
+    assert config.is_verified is True
+    assert config.encrypted_password != "local-test-authorization-code"
+    assert decrypt_secret(config.encrypted_password) == "local-test-authorization-code"
+
+    preview = client.post(
+        reverse("core:task-preview"),
+        {"city_id": "10", "source_url": VALID_URL},
+    )
+    assert preview.status_code == 200
+    assert "MOViE MOViE 影城（前滩太古里店）" in preview.content.decode()
+
+    with django_capture_on_commit_callbacks(execute=True):
+        confirmation = client.post(
+            reverse("core:task-confirm"),
+            {
+                "signed_preview": preview.context["signed_preview"],
+                "cinema_id": "37534",
+            },
+        )
+
+    task = MonitorTask.objects.get()
+    assert confirmation.status_code == 302
+    assert confirmation.url == reverse("core:task-detail", args=[task.pk])
+    assert task.status == MonitorTask.Status.MONITORING
+
+    now = timezone.now()
+    first_pass = run_due_work(now=now)
+    task.refresh_from_db()
+    assert first_pass["checked"] is True
+    assert task.status == MonitorTask.Status.DETECTED
+    assert task.notifications.filter(notification_type=Notification.Type.OPENING).count() == 1
+
+    delivery_pass = run_due_work(now=now)
+    task.refresh_from_db()
+    notification = task.notifications.get(notification_type=Notification.Type.OPENING)
+    assert delivery_pass["notifications"] == 1
+    assert notification.status == Notification.Status.SENT
+    assert task.status == MonitorTask.Status.COMPLETED
+    assert smtp_ssl.return_value.send_message.call_count == 2
+
+    completed_body = client.get(reverse("core:dashboard")).content.decode()
+    assert "已完成" in completed_body
+    assert task.movie_name in completed_body
+
+    no_duplicate_pass = run_due_work(now=now)
+    assert no_duplicate_pass == {"expired": False, "notifications": 0, "checked": False}
+    assert smtp_ssl.return_value.send_message.call_count == 2
+    assert task.notifications.filter(notification_type=Notification.Type.OPENING).count() == 1

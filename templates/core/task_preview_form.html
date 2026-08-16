@@ -1,15 +1,18 @@
-<!doctype html>
-<html lang="zh-Hans">
-  <head>
-    <meta charset="utf-8">
-    <title>新建监控任务</title>
-  </head>
-  <body>
+{% extends "base.html" %}
+
+{% block title %}新建监控任务 · TicketWatch{% endblock %}
+
+{% block content %}
+  <header class="page-heading">
+    <p class="eyebrow">创建任务</p>
     <h1>新建监控任务</h1>
+    <p>选择城市并粘贴包含 movieId 和 showDate 的猫眼影院列表 HTTPS 链接。</p>
+  </header>
+  <section class="form-card">
     <form method="post">
       {% csrf_token %}
       {{ form.as_p }}
-      <button type="submit">预览影院</button>
+      <button class="button-primary" type="submit">预览影院</button>
     </form>
-  </body>
-</html>
+  </section>
+{% endblock %}

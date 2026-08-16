@@ -1,13 +1,15 @@
 from django import forms
 
 from core.crypto import encrypt_secret
-from core.models import SMTPConfig
+from core.models import AppSetting, SMTPConfig
 
 MAOYAN_CITIES = {10: "上海"}
 
 
 class SMTPConfigForm(forms.ModelForm):
     authorization_code = forms.CharField(
+        label="SMTP 授权码",
+        help_text="不是邮箱登录密码；留空会保留已经保存的授权码。",
         required=False,
         widget=forms.PasswordInput(render_value=False),
     )
@@ -15,6 +17,14 @@ class SMTPConfigForm(forms.ModelForm):
     class Meta:
         model = SMTPConfig
         fields = ("host", "port", "security", "username", "from_email", "recipient_email")
+        labels = {
+            "host": "SMTP 主机",
+            "port": "端口",
+            "security": "连接安全",
+            "username": "用户名",
+            "from_email": "发件邮箱",
+            "recipient_email": "收件邮箱",
+        }
 
     def clean_authorization_code(self):
         value = self.cleaned_data["authorization_code"]
@@ -32,6 +42,20 @@ class SMTPConfigForm(forms.ModelForm):
         if commit:
             config.save()
         return config
+
+
+class AppSettingForm(forms.ModelForm):
+    class Meta:
+        model = AppSetting
+        fields = ("poll_interval_seconds",)
+        labels = {"poll_interval_seconds": "轮询间隔（秒）"}
+        help_texts = {"poll_interval_seconds": "最低 60 秒，保存后立即应用。"}
+
+    def clean_poll_interval_seconds(self):
+        value = self.cleaned_data["poll_interval_seconds"]
+        if value < 60:
+            raise forms.ValidationError("轮询间隔不能低于 60 秒")
+        return value
 
 
 class TaskPreviewForm(forms.Form):

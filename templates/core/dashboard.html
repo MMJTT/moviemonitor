@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+
+{% block title %}监控仪表盘 · TicketWatch{% endblock %}
+
+{% block content %}
+  <section class="hero">
+    <div>
+      <p class="eyebrow">本地单任务开票监控</p>
+      <h1>监控仪表盘</h1>
+      <p class="lede">精确关注一部电影、一个日期和一家影院，开票或到期时只发送一次邮件。</p>
+    </div>
+    <div class="interval-card" aria-label="当前轮询设置">
+      <span>检查间隔</span>
+      <strong>{{ setting.poll_interval_seconds }} 秒</strong>
+      <a href="{% url 'core:settings' %}">修改设置</a>
+    </div>
+  </section>
+
+  {% if not smtp.is_verified %}
+    <section class="notice notice-warning" aria-labelledby="smtp-needed">
+      <div>
+        <p class="eyebrow">第一步</p>
+        <h2 id="smtp-needed">先配置并测试 SMTP</h2>
+        <p>任务只能在测试邮件成功后创建。邮箱通常需要使用 SMTP 授权码，而不是登录密码。</p>
+      </div>
+      <a class="button button-primary" href="{% url 'core:smtp-edit' %}">配置 SMTP</a>
+    </section>
+  {% elif not task %}
+    <section class="empty-state">
+      <p class="eyebrow">SMTP 已就绪</p>
+      <h2>创建监控任务</h2>
+      <p>准备好猫眼影院列表链接，然后选择城市和一家目标影院。</p>
+      <a class="button button-primary" href="{% url 'core:task-preview' %}">创建监控任务</a>
+    </section>
+  {% endif %}
+
+  {% if task %}
+    <section class="task-card">
+      <div class="task-heading">
+        <div>
+          <p class="eyebrow">最近任务</p>
+          <h2>{{ task.movie_name }}</h2>
+          <p>{{ task.show_date|date:"Y年n月j日" }} · {{ task.city_name }} · {{ task.cinema_name }}</p>
+        </div>
+        <span class="status status-{{ task.status|lower }}">{{ task.get_status_display }}</span>
+      </div>
+
+      <dl class="fact-grid">
+        <div><dt>上次检查</dt><dd>{{ task.last_checked_at|date:"Y-m-d H:i:s"|default:"尚未检查" }}</dd></div>
+        <div><dt>下次检查</dt><dd>{{ task.next_check_at|date:"Y-m-d H:i:s"|default:"—" }}</dd></div>
+        <div><dt>连续异常</dt><dd>{{ task.consecutive_failures }} 次</dd></div>
+        <div><dt>邮件状态</dt><dd>{% if notification %}{{ notification.get_status_display }}{% else %}尚无通知{% endif %}</dd></div>
+      </dl>
+
+      {% if task.last_error %}
+        <p class="notice notice-error" role="alert">最近错误：{{ task.last_error }}</p>
+      {% endif %}
+      {% if notification.last_error %}
+        <p class="notice notice-error" role="alert">邮件提示：{{ notification.last_error }}</p>
+      {% endif %}
+
+      <div class="actions">
+        <a class="button button-secondary" href="{% url 'core:task-detail' task.pk %}">查看详情与记录</a>
+        {% if task.status == "MONITORING" %}
+          <form method="post" action="{% url 'core:task-run-now' task.pk %}">{% csrf_token %}<button type="submit">立即检查</button></form>
+          <form method="post" action="{% url 'core:task-pause' task.pk %}">{% csrf_token %}<button type="submit">暂停</button></form>
+          <form method="post" action="{% url 'core:task-cancel' task.pk %}">{% csrf_token %}<button class="button-danger" type="submit">取消任务</button></form>
+        {% elif task.status == "PAUSED" or task.status == "ERROR" %}
+          <form method="post" action="{% url 'core:task-resume' task.pk %}">{% csrf_token %}<button type="submit">恢复监控</button></form>
+          <form method="post" action="{% url 'core:task-cancel' task.pk %}">{% csrf_token %}<button class="button-danger" type="submit">取消任务</button></form>
+        {% elif task.status == "DETECTED" %}
+          <form method="post" action="{% url 'core:task-cancel' task.pk %}">{% csrf_token %}<button class="button-danger" type="submit">取消任务</button></form>
+        {% else %}
+          {% if smtp.is_verified %}<a class="button button-primary" href="{% url 'core:task-preview' %}">创建新的监控任务</a>{% endif %}
+        {% endif %}
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}
