@@ -203,7 +203,11 @@ class MaoyanAdapter:
         selected_cities = soup.select(".city-selected")
         movie_names = soup.select(".movie-brief-container h1.name")
         movie_actions = soup.select(".action[data-val]")
-        active_dates = soup.select("a.active[data-val]")
+        active_filter_links = soup.select("li.active > a[data-val]")
+        active_date_matches = []
+        for link in active_filter_links:
+            if match := SHOW_DATE_PATTERN.fullmatch(link["data-val"]):
+                active_date_matches.append(match)
         cinema_lists = soup.select(".cinemas-list")
         if not all(
             len(nodes) == 1
@@ -212,15 +216,14 @@ class MaoyanAdapter:
                 selected_cities,
                 movie_names,
                 movie_actions,
-                active_dates,
                 cinema_lists,
             )
-        ):
+        ) or len(active_date_matches) != 1:
             raise PageStructureError("response has ambiguous live page context")
 
         city_match = CITY_ID_PATTERN.fullmatch(city_containers[0]["data-val"])
         movie_match = MOVIE_ID_PATTERN.fullmatch(movie_actions[0]["data-val"])
-        date_match = SHOW_DATE_PATTERN.fullmatch(active_dates[0]["data-val"])
+        date_match = active_date_matches[0]
         city_name = selected_cities[0].get_text(" ", strip=True)
         movie_name = movie_names[0].get_text(" ", strip=True)
         if city_match is None or int(city_match.group(1)) != target.city_id:

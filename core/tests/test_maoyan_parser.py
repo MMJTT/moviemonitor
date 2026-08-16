@@ -121,6 +121,31 @@ def test_live_page_with_mismatched_authoritative_context_is_rejected(adapter, ta
         adapter.parse_html(html, target)
 
 
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        '<li class="active"><a data-val="{dateFilter:all}">全部日期</a></li>',
+        (
+            '<li class="active"><a data-val="{TagName:\'2026-08-20\'}">8月20日</a></li>'
+            '<li class="active"><a data-val="{TagName:\'2026-08-20\'}">重复日期</a></li>'
+        ),
+        '<li class="active"><a data-val="{TagName:\'2026-08-21\'}">8月21日</a></li>',
+    ],
+)
+def test_live_page_rejects_zero_duplicate_or_mismatched_active_date_markers(
+    adapter, target, replacement
+):
+    """Accepting anything but one exact date-shaped active filter must fail this test."""
+    html = read_fixture("live_open.html").replace(
+        '<li class="active"><a data-val="{TagName:\'2026-08-20\'}">8月20日</a></li>',
+        replacement,
+        1,
+    )
+
+    with pytest.raises(PageStructureError):
+        adapter.parse_html(html, target)
+
+
 def test_live_page_requires_one_nonempty_movie_name(adapter, target):
     """Accepting a missing or ambiguous authoritative movie name must fail this test."""
     fixture = read_fixture("live_open.html")
