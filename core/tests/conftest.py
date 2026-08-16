@@ -3,7 +3,7 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
-from core.models import MonitorTask, SMTPConfig
+from core.models import MonitorTask, Notification, SMTPConfig
 from core.services.tasks import PreviewCinema, TaskPreviewPayload, sign_preview
 
 
@@ -45,6 +45,28 @@ def verified_smtp(db):
 @pytest.fixture
 def active_task(task_factory):
     return task_factory(status=MonitorTask.Status.MONITORING)
+
+
+@pytest.fixture
+def opening_notification(active_task):
+    active_task.status = MonitorTask.Status.DETECTED
+    active_task.detected_at = timezone.now()
+    active_task.booking_url = "https://www.maoyan.com/cinema/37534"
+    active_task.save()
+    return Notification.objects.create(
+        task=active_task,
+        notification_type=Notification.Type.OPENING,
+        status=Notification.Status.PENDING,
+    )
+
+
+@pytest.fixture
+def pending_notification(active_task):
+    return Notification.objects.create(
+        task=active_task,
+        notification_type=Notification.Type.OPENING,
+        status=Notification.Status.PENDING,
+    )
 
 
 @pytest.fixture
