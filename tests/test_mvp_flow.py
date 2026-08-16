@@ -7,9 +7,11 @@ from django.urls import reverse
 from django.utils import timezone
 from freezegun import freeze_time
 
+from core.adapters.base import CheckResult, ParsedTarget, TemporaryPlatformError
 from core.crypto import decrypt_secret
 from core.models import AppSetting, CheckRun, MonitorTask, Notification, SMTPConfig
 from core.scheduler import run_due_work, set_process_scheduler
+from core.services.tasks import perform_check
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "maoyan"
 VALID_URL = "https://www.maoyan.com/cinemas?movieId=1545360&showDate=2026-08-20"
@@ -21,6 +23,25 @@ class RecordingScheduler:
 
     def wake(self):
         self.wake_count += 1
+
+
+def closed_result_for(task):
+    return CheckResult(
+        target=ParsedTarget(
+            platform="maoyan",
+            city_id=task.city_id,
+            city_name=task.city_name,
+            movie_id=task.movie_id,
+            show_date=task.show_date,
+            source_url=task.source_url,
+            normalized_url=task.normalized_url,
+            query_key=task.query_key,
+        ),
+        movie_name=task.movie_name,
+        valid_page=True,
+        cinemas=(),
+        content_fingerprint="closed-fixture",
+    )
 
 
 @pytest.fixture
@@ -174,6 +195,63 @@ def test_saving_poll_interval_reschedules_monitoring_task_and_wakes_scheduler(
     assert AppSetting.get_solo().poll_interval_seconds == 180
     assert active_task.next_check_at == now + timedelta(seconds=180)
     assert scheduler.wake_count == 1
+
+
+@pytest.mark.django_db
+def test_settings_saved_during_successful_check_keeps_later_due_time(
+    client, active_task, mocker
+):
+    """A completing check must not overwrite a later schedule saved during its fetch."""
+    check_started_at = timezone.now()
+    settings_saved_at = check_started_at + timedelta(seconds=30)
+    mocker.patch("core.views.timezone.now", return_value=settings_saved_at)
+
+    def save_settings_during_fetch(target):
+        response = client.post(
+            reverse("core:settings"),
+            {"poll_interval_seconds": 300},
+        )
+        assert response.status_code == 302
+        return closed_result_for(active_task)
+
+    mocker.patch(
+        "core.services.tasks.MaoyanAdapter.fetch",
+        side_effect=save_settings_during_fetch,
+    )
+
+    perform_check(active_task.pk, now=check_started_at)
+
+    active_task.refresh_from_db()
+    assert active_task.next_check_at == settings_saved_at + timedelta(seconds=300)
+
+
+@pytest.mark.django_db
+def test_settings_saved_during_failed_check_keeps_later_due_time_and_backoff(
+    client, active_task, mocker
+):
+    """A retry schedule must preserve a later settings write without losing safe backoff."""
+    check_started_at = timezone.now()
+    settings_saved_at = check_started_at + timedelta(seconds=90)
+    mocker.patch("core.views.timezone.now", return_value=settings_saved_at)
+
+    def save_settings_during_fetch(target):
+        response = client.post(
+            reverse("core:settings"),
+            {"poll_interval_seconds": 60},
+        )
+        assert response.status_code == 302
+        raise TemporaryPlatformError("fixture network failure")
+
+    mocker.patch(
+        "core.services.tasks.MaoyanAdapter.fetch",
+        side_effect=save_settings_during_fetch,
+    )
+
+    check = perform_check(active_task.pk, now=check_started_at)
+
+    active_task.refresh_from_db()
+    assert check.status == CheckRun.Status.TEMPORARY_ERROR
+    assert active_task.next_check_at == settings_saved_at + timedelta(seconds=60)
 
 
 @pytest.mark.django_db

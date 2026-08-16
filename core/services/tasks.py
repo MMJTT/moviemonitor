@@ -53,13 +53,16 @@ class TaskTransitionError(ValueError):
     """Raised when the current durable task state rejects a lifecycle action."""
 
 
-_opening_notification_transition_lock = threading.RLock()
+_task_transition_lock = threading.RLock()
 
 
 @contextmanager
-def opening_notification_transition():
-    with _opening_notification_transition_lock:
+def task_transition():
+    with _task_transition_lock:
         yield
+
+
+opening_notification_transition = task_transition
 
 
 @dataclass(frozen=True)
@@ -225,6 +228,12 @@ def next_failure_time(now, configured_seconds, failure_count):
     return now + timedelta(seconds=max(configured_seconds, FAILURE_BACKOFF_SECONDS[index]))
 
 
+def _not_earlier_than_persisted(persisted, computed):
+    if persisted is None:
+        return computed
+    return max(persisted, computed)
+
+
 def _target_for_task(task):
     return ParsedTarget(
         platform="maoyan",
@@ -279,7 +288,7 @@ def perform_check(task_id, now=None):
         failure = exc
 
     finished_at = timezone.now()
-    with transaction.atomic():
+    with task_transition(), transaction.atomic():
         current = MonitorTask.objects.select_for_update().get(pk=task_id)
         if current.status != MonitorTask.Status.MONITORING:
             previous = current.checks.order_by("-pk").first()
@@ -306,8 +315,9 @@ def perform_check(task_id, now=None):
                 current.next_check_at = None
             else:
                 configured_seconds = AppSetting.get_solo().poll_interval_seconds
-                current.next_check_at = next_failure_time(
-                    now, configured_seconds, failure_count
+                current.next_check_at = _not_earlier_than_persisted(
+                    current.next_check_at,
+                    next_failure_time(now, configured_seconds, failure_count),
                 )
             current.save(
                 update_fields=[
@@ -366,7 +376,10 @@ def perform_check(task_id, now=None):
             )
         else:
             configured_seconds = AppSetting.get_solo().poll_interval_seconds
-            current.next_check_at = now + timedelta(seconds=configured_seconds)
+            current.next_check_at = _not_earlier_than_persisted(
+                current.next_check_at,
+                now + timedelta(seconds=configured_seconds),
+            )
             current.save(
                 update_fields=[
                     "consecutive_failures",
