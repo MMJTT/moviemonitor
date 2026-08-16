@@ -1,7 +1,10 @@
+import threading
 from datetime import timedelta
 
 import pytest
+from django.db import close_old_connections
 from django.middleware.csrf import _get_new_csrf_string
+from django.test import Client
 from django.urls import reverse
 from django.utils import timezone
 
@@ -16,6 +19,23 @@ class RecordingScheduler:
 
     def wake(self):
         self.wake_count += 1
+
+
+def start_database_thread(name, target):
+    errors = []
+
+    def run():
+        close_old_connections()
+        try:
+            target()
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            close_old_connections()
+
+    thread = threading.Thread(name=name, target=run)
+    thread.start()
+    return thread, errors
 
 
 @pytest.fixture(autouse=True)
@@ -136,6 +156,111 @@ def test_cancel_detected_task_invalidates_pending_opening_before_dispatch(
     deliver_notification(opening_notification.pk, now=now)
     opening_notification.refresh_from_db()
     assert opening_notification.status == Notification.Status.PERMANENT_FAILED
+    send.assert_not_called()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_delivery_claim_wins_before_cancel_and_cancel_returns_conflict(
+    opening_notification, verified_smtp, mocker
+):
+    """Cancelling after an opening claim must not race into a 500 or cancelled sent task."""
+    send_started = threading.Event()
+    release_send = threading.Event()
+
+    def blocked_send(config, message):
+        send_started.set()
+        assert release_send.wait(timeout=2)
+        return "accepted"
+
+    mocker.patch("core.services.notifications.send_message", side_effect=blocked_send)
+    delivery_thread, delivery_errors = start_database_thread(
+        "opening-delivery",
+        lambda: deliver_notification(opening_notification.pk),
+    )
+    assert send_started.wait(timeout=2)
+
+    response = Client().post(
+        reverse("core:task-cancel", args=[opening_notification.task_id])
+    )
+    release_send.set()
+    delivery_thread.join(timeout=2)
+
+    assert delivery_thread.is_alive() is False
+    assert delivery_errors == []
+    assert response.status_code == 409
+    opening_notification.refresh_from_db()
+    opening_notification.task.refresh_from_db()
+    assert opening_notification.status == Notification.Status.SENT
+    assert opening_notification.task.status == MonitorTask.Status.COMPLETED
+    assert opening_notification.task.cancelled_at is None
+
+
+@pytest.mark.django_db(transaction=True)
+def test_cancel_wins_competing_delivery_without_database_lock_or_send(
+    opening_notification, verified_smtp, mocker
+):
+    """A cancel-first race must commit cancellation without SQLite lock errors or mail."""
+    cancel_before_write = threading.Event()
+    release_cancel = threading.Event()
+    delivery_before_write = threading.Event()
+    release_delivery = threading.Event()
+    original_task_save = MonitorTask.save
+    original_notification_save = Notification.save
+
+    def coordinated_task_save(task, *args, **kwargs):
+        if (
+            threading.current_thread().name == "task-cancel"
+            and task.status == MonitorTask.Status.CANCELLED
+        ):
+            cancel_before_write.set()
+            assert release_cancel.wait(timeout=2)
+        return original_task_save(task, *args, **kwargs)
+
+    def coordinated_notification_save(notification, *args, **kwargs):
+        if (
+            threading.current_thread().name == "opening-delivery"
+            and notification.status == Notification.Status.SENDING
+        ):
+            delivery_before_write.set()
+            assert release_delivery.wait(timeout=2)
+        return original_notification_save(notification, *args, **kwargs)
+
+    mocker.patch.object(MonitorTask, "save", new=coordinated_task_save)
+    mocker.patch.object(Notification, "save", new=coordinated_notification_save)
+    send = mocker.patch("core.services.notifications.send_message", return_value="accepted")
+    cancel_responses = []
+    cancel_thread, cancel_errors = start_database_thread(
+        "task-cancel",
+        lambda: cancel_responses.append(
+            Client().post(
+                reverse("core:task-cancel", args=[opening_notification.task_id])
+            )
+        ),
+    )
+    assert cancel_before_write.wait(timeout=2)
+
+    delivery_thread, delivery_errors = start_database_thread(
+        "opening-delivery",
+        lambda: deliver_notification(opening_notification.pk),
+    )
+    delivery_before_write.wait(timeout=0.5)
+    release_cancel.set()
+    cancel_thread.join(timeout=2)
+    release_delivery.set()
+    delivery_thread.join(timeout=2)
+
+    assert cancel_thread.is_alive() is False
+    assert delivery_thread.is_alive() is False
+    assert cancel_errors == []
+    assert delivery_errors == []
+    assert len(cancel_responses) == 1
+    assert cancel_responses[0].status_code == 302
+    opening_notification.refresh_from_db()
+    opening_notification.task.refresh_from_db()
+    assert opening_notification.status == Notification.Status.PERMANENT_FAILED
+    assert opening_notification.last_error == "task-no-longer-detected"
+    assert opening_notification.task.status == MonitorTask.Status.CANCELLED
+    assert opening_notification.task.cancelled_at is not None
     send.assert_not_called()
 
 

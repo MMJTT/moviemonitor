@@ -1,6 +1,6 @@
 from django.core import signing
 from django.db import transaction
-from django.http import HttpResponse, HttpResponseBadRequest, HttpResponseForbidden
+from django.http import Http404, HttpResponse, HttpResponseBadRequest, HttpResponseForbidden
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_http_methods, require_POST
@@ -8,14 +8,15 @@ from django.views.decorators.http import require_http_methods, require_POST
 from core.adapters.base import AdapterError
 from core.adapters.maoyan import MaoyanAdapter
 from core.forms import MAOYAN_CITIES, SMTPConfigForm, TaskConfirmForm, TaskPreviewForm
-from core.models import MonitorTask, Notification, SMTPConfig
+from core.models import MonitorTask, SMTPConfig
 from core.scheduler import wake_scheduler
-from core.services.notifications import TASK_NO_LONGER_DETECTED
 from core.services.smtp import sanitize_smtp_error, test_smtp_config
 from core.services.tasks import (
     PreviewCinema,
     TaskCreationError,
     TaskPreviewPayload,
+    TaskTransitionError,
+    cancel_task,
     create_task,
     sign_preview,
 )
@@ -183,47 +184,12 @@ def task_resume(request, task_id):
 
 @require_POST
 def task_cancel(request, task_id):
-    unfinished_statuses = {
-        MonitorTask.Status.MONITORING,
-        MonitorTask.Status.PAUSED,
-        MonitorTask.Status.DETECTED,
-        MonitorTask.Status.ERROR,
-    }
-    now = timezone.now()
-    with transaction.atomic():
-        pending_opening = (
-            Notification.objects.select_for_update()
-            .filter(
-                task_id=task_id,
-                notification_type=Notification.Type.OPENING,
-                status=Notification.Status.PENDING,
-            )
-            .first()
-        )
-        task = get_object_or_404(
-            MonitorTask.objects.select_for_update(),
-            pk=task_id,
-        )
-        if task.status not in unfinished_statuses:
-            return _transition_conflict()
-        task.status = MonitorTask.Status.CANCELLED
-        task.cancelled_at = now
-        task.next_check_at = None
-        task.save(
-            update_fields=["status", "cancelled_at", "next_check_at", "updated_at"]
-        )
-        if pending_opening is not None:
-            pending_opening.status = Notification.Status.PERMANENT_FAILED
-            pending_opening.next_attempt_at = None
-            pending_opening.last_error = TASK_NO_LONGER_DETECTED
-            pending_opening.save(
-                update_fields=[
-                    "status",
-                    "next_attempt_at",
-                    "last_error",
-                    "updated_at",
-                ]
-            )
+    try:
+        cancel_task(task_id, now=timezone.now())
+    except MonitorTask.DoesNotExist as exc:
+        raise Http404 from exc
+    except TaskTransitionError:
+        return _transition_conflict()
     return _lifecycle_redirect()
 
 

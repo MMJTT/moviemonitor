@@ -9,10 +9,10 @@ from django.utils import timezone
 from core.crypto import CredentialKeyError
 from core.models import MonitorTask, Notification, SMTPConfig
 from core.services.smtp import sanitize_smtp_error, send_message
+from core.services.tasks import TASK_NO_LONGER_DETECTED, opening_notification_transition
 
 RETRY_MINUTES = (1, 5, 15, 30, 60)
 EXPIRED_BEFORE_DELIVERY = "expired-before-delivery"
-TASK_NO_LONGER_DETECTED = "task-no-longer-detected"
 
 EXPIRABLE_TASK_STATUSES = (
     MonitorTask.Status.MONITORING,
@@ -148,7 +148,7 @@ def _reschedule_notification(notification_id, error, now):
 
 def deliver_notification(notification_id, now=None):
     now = now or timezone.now()
-    with transaction.atomic():
+    with opening_notification_transition(), transaction.atomic():
         notification = (
             Notification.objects.select_for_update()
             .select_related("task")
@@ -247,8 +247,8 @@ def dispatch_due_notifications(now=None):
     ids = list(
         Notification.objects.filter(status=Notification.Status.PENDING)
         .filter(Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now))
-        .order_by("created_at")
-        .values_list("pk", flat=True)
+        .order_by("created_at", "pk")
+        .values_list("pk", flat=True)[:1]
     )
     for notification_id in ids:
         deliver_notification(notification_id, now=now)

@@ -5,7 +5,7 @@ import pytest
 from django.core.management.base import CommandError
 from django.utils import timezone
 
-from core.models import MonitorTask
+from core.models import MonitorTask, Notification
 from core.scheduler import LocalScheduler, run_due_work, set_process_scheduler, wake_scheduler
 
 
@@ -65,6 +65,34 @@ def test_due_work_does_not_check_future_or_paused_tasks(task_factory, mocker):
     future_task.save(update_fields=["status", "next_check_at"])
     assert run_due_work(now=now)["checked"] is False
     check.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_due_work_sends_one_backlogged_notification_then_checks_due_task(
+    active_task, task_factory, verified_smtp, mocker
+):
+    """Draining a mail backlog in one tick would starve checks and multiply SMTP timeouts."""
+    now = timezone.now()
+    active_task.next_check_at = now
+    active_task.save(update_fields=["next_check_at"])
+    for _ in range(3):
+        terminal_task = task_factory(status=MonitorTask.Status.CANCELLED)
+        Notification.objects.create(
+            task=terminal_task,
+            notification_type=Notification.Type.EXPIRY,
+            status=Notification.Status.PENDING,
+            next_attempt_at=now,
+        )
+    send = mocker.patch("core.services.notifications.send_message", return_value="accepted")
+    check = mocker.patch("core.scheduler.perform_check")
+
+    outcome = run_due_work(now=now)
+
+    assert outcome == {"expired": False, "notifications": 1, "checked": True}
+    assert Notification.objects.filter(status=Notification.Status.SENT).count() == 1
+    assert Notification.objects.filter(status=Notification.Status.PENDING).count() == 2
+    assert send.call_count == 1
+    check.assert_called_once_with(active_task.pk, now=now)
 
 
 def test_scheduler_lock_skips_reentrant_tick(mocker):

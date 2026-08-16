@@ -1,3 +1,5 @@
+import threading
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 
@@ -17,6 +19,7 @@ from core.models import AppSetting, CheckRun, MonitorTask, Notification, SMTPCon
 
 PREVIEW_SALT = "local-task-preview"
 FAILURE_BACKOFF_SECONDS = (120, 300, 900, 1800, 3600)
+TASK_NO_LONGER_DETECTED = "task-no-longer-detected"
 
 _FAILURE_DETAILS = {
     TemporaryPlatformError: (
@@ -44,6 +47,19 @@ _FAILURE_DETAILS = {
 
 class TaskCreationError(ValueError):
     """Raised when a signed preview cannot become a monitoring task."""
+
+
+class TaskTransitionError(ValueError):
+    """Raised when the current durable task state rejects a lifecycle action."""
+
+
+_opening_notification_transition_lock = threading.Lock()
+
+
+@contextmanager
+def opening_notification_transition():
+    with _opening_notification_transition_lock:
+        yield
 
 
 @dataclass(frozen=True)
@@ -150,6 +166,52 @@ def enqueue_immediate_check(task_id) -> None:
     from core.scheduler import wake_scheduler
 
     wake_scheduler()
+
+
+def cancel_task(task_id, now=None):
+    unfinished_statuses = {
+        MonitorTask.Status.MONITORING,
+        MonitorTask.Status.PAUSED,
+        MonitorTask.Status.DETECTED,
+        MonitorTask.Status.ERROR,
+    }
+    now = now or timezone.now()
+    with opening_notification_transition(), transaction.atomic():
+        task = MonitorTask.objects.filter(pk=task_id).first()
+        if task is None:
+            raise MonitorTask.DoesNotExist
+        if task.status not in unfinished_statuses:
+            raise TaskTransitionError("task state does not allow cancellation")
+        opening = (
+            Notification.objects.filter(
+                task_id=task_id,
+                notification_type=Notification.Type.OPENING,
+            )
+            .order_by("created_at")
+            .first()
+        )
+        if opening is not None and opening.status == Notification.Status.SENDING:
+            raise TaskTransitionError("opening notification is already sending")
+
+        task.status = MonitorTask.Status.CANCELLED
+        task.cancelled_at = now
+        task.next_check_at = None
+        task.save(
+            update_fields=["status", "cancelled_at", "next_check_at", "updated_at"]
+        )
+        if opening is not None and opening.status == Notification.Status.PENDING:
+            opening.status = Notification.Status.PERMANENT_FAILED
+            opening.next_attempt_at = None
+            opening.last_error = TASK_NO_LONGER_DETECTED
+            opening.save(
+                update_fields=[
+                    "status",
+                    "next_attempt_at",
+                    "last_error",
+                    "updated_at",
+                ]
+            )
+        return task
 
 
 def matches_target(task, cinema):
