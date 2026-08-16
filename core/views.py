@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from django.core import signing
-from django.db import DatabaseError, transaction
+from django.db import transaction
 from django.http import Http404, HttpResponse, HttpResponseBadRequest, HttpResponseForbidden
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -9,7 +9,6 @@ from django.views.decorators.http import require_http_methods, require_POST
 
 from core.adapters.base import AdapterError
 from core.adapters.maoyan import MaoyanAdapter
-from core.crypto import CredentialKeyError
 from core.forms import (
     MAOYAN_CITIES,
     AppSettingForm,
@@ -91,6 +90,25 @@ def _mark_smtp_verified(config):
         transaction.on_commit(wake_scheduler)
 
 
+def _smtp_persistence_failure(request, config):
+    try:
+        durable_config = SMTPConfig.objects.get(pk=config.pk)
+    except Exception:
+        durable_config = config
+        durable_config.is_verified = False
+        durable_config.verified_at = None
+    form = SMTPConfigForm(instance=durable_config)
+    return render(
+        request,
+        "core/smtp_form.html",
+        {
+            "form": form,
+            "config": durable_config,
+            "persistence_error": "无法安全保存 SMTP 配置，请检查本地密钥和数据库。",
+        },
+    )
+
+
 @require_http_methods(["GET", "POST"])
 def smtp_edit(request):
     config = SMTPConfig.get_solo()
@@ -98,19 +116,24 @@ def smtp_edit(request):
     if request.method == "POST" and form.is_valid():
         try:
             config = form.save()
-        except (CredentialKeyError, OSError, DatabaseError):
-            form.add_error(None, "无法安全保存 SMTP 配置，请检查本地密钥和数据库。")
-            return render(request, "core/smtp_form.html", {"form": form, "config": config})
+        except Exception:
+            return _smtp_persistence_failure(request, config)
         try:
             test_smtp_config(config)
         except Exception as exc:
             config.is_verified = False
             config.verified_at = None
             config.last_error = sanitize_smtp_error(exc)
-            config.save()
+            try:
+                config.save()
+            except Exception:
+                return _smtp_persistence_failure(request, config)
             return render(request, "core/smtp_form.html", {"form": form, "config": config})
 
-        _mark_smtp_verified(config)
+        try:
+            _mark_smtp_verified(config)
+        except Exception:
+            return _smtp_persistence_failure(request, config)
         return redirect("core:smtp-edit")
 
     return render(request, "core/smtp_form.html", {"form": form, "config": config})
@@ -125,14 +148,20 @@ def smtp_test(request):
         config.is_verified = False
         config.verified_at = None
         config.last_error = sanitize_smtp_error(exc)
-        config.save()
+        try:
+            config.save()
+        except Exception:
+            return _smtp_persistence_failure(request, config)
         return render(
             request,
             "core/smtp_form.html",
             {"form": SMTPConfigForm(instance=config), "config": config},
         )
 
-    _mark_smtp_verified(config)
+    try:
+        _mark_smtp_verified(config)
+    except Exception:
+        return _smtp_persistence_failure(request, config)
     return redirect("core:smtp-edit")
 
 

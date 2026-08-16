@@ -25,6 +25,9 @@
     {% if config.last_error %}
       <p class="notice notice-error" role="alert">{{ config.last_error }}</p>
     {% endif %}
+    {% if persistence_error %}
+      <p class="notice notice-error" role="alert">{{ persistence_error }}</p>
+    {% endif %}
     <form method="post">
       {% csrf_token %}
       {{ form.as_p }}

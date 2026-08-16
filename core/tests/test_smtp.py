@@ -195,6 +195,135 @@ def test_smtp_save_failure_never_escapes_or_renders_submitted_credential(client,
     assert "database rejected" not in body
 
 
+def _fail_second_smtp_config_save(mocker, message):
+    original_save = SMTPConfig.save
+    save_count = 0
+
+    def save_then_fail(config, *args, **kwargs):
+        nonlocal save_count
+        save_count += 1
+        if save_count == 2:
+            raise DatabaseError(message)
+        return original_save(config, *args, **kwargs)
+
+    mocker.patch.object(SMTPConfig, "save", new=save_then_fail)
+
+
+@pytest.mark.django_db
+def test_smtp_failure_state_save_error_uses_unbound_secret_safe_response(
+    client, mocker, caplog
+):
+    """A failed post-test state save reaching Django DEBUG would expose the POST secret."""
+    SMTPConfig.get_solo()
+    client.raise_request_exception = False
+    submitted_secret = "failure-branch-authorization-code"
+    _fail_second_smtp_config_save(mocker, f"database rejected {submitted_secret}")
+    smtp_ssl = mocker.patch("core.services.smtp.smtplib.SMTP_SSL")
+    smtp_ssl.return_value.login.side_effect = SMTPAuthenticationError(
+        535, b"private SMTP response"
+    )
+
+    with caplog.at_level("ERROR"):
+        response = client.post(
+            reverse("core:smtp-edit"),
+            {
+                "host": "smtp.163.com",
+                "port": 465,
+                "security": "ssl",
+                "username": "sender@example.com",
+                "from_email": "sender@example.com",
+                "recipient_email": "receiver@example.com",
+                "authorization_code": submitted_secret,
+            },
+        )
+
+    body = response.content.decode()
+    assert response.status_code == 200
+    assert response.context["form"].is_bound is False
+    assert "无法安全保存 SMTP 配置" in body
+    assert submitted_secret not in body
+    assert submitted_secret not in caplog.text
+    assert "database rejected" not in body
+    assert "database rejected" not in caplog.text
+    assert SMTPConfig.get_solo().is_verified is False
+
+
+@pytest.mark.django_db
+def test_smtp_success_state_save_error_uses_unbound_secret_safe_response(
+    client, mocker, caplog
+):
+    """A failed verification-state save reaching Django DEBUG would expose the POST secret."""
+    SMTPConfig.get_solo()
+    client.raise_request_exception = False
+    submitted_secret = "success-branch-authorization-code"
+    _fail_second_smtp_config_save(mocker, f"database rejected {submitted_secret}")
+    mocker.patch("core.services.smtp.smtplib.SMTP_SSL")
+
+    with caplog.at_level("ERROR"):
+        response = client.post(
+            reverse("core:smtp-edit"),
+            {
+                "host": "smtp.163.com",
+                "port": 465,
+                "security": "ssl",
+                "username": "sender@example.com",
+                "from_email": "sender@example.com",
+                "recipient_email": "receiver@example.com",
+                "authorization_code": submitted_secret,
+            },
+        )
+
+    body = response.content.decode()
+    assert response.status_code == 200
+    assert response.context["form"].is_bound is False
+    assert "无法安全保存 SMTP 配置" in body
+    assert submitted_secret not in body
+    assert submitted_secret not in caplog.text
+    assert "database rejected" not in body
+    assert "database rejected" not in caplog.text
+    assert SMTPConfig.get_solo().is_verified is False
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("smtp_test_fails", [False, True])
+def test_stored_smtp_retest_state_save_error_is_also_safe(
+    client, mocker, caplog, smtp_test_fails
+):
+    """Stored-config retest persistence errors must not escape either result branch."""
+    stored_secret = "stored-authorization-code"
+    config = SMTPConfig.get_solo()
+    config.host = "smtp.163.com"
+    config.username = config.from_email = "sender@example.com"
+    config.recipient_email = "receiver@example.com"
+    config.encrypted_password = encrypt_secret(stored_secret)
+    config.is_verified = False
+    config.save()
+    client.raise_request_exception = False
+    mocker.patch.object(
+        SMTPConfig,
+        "save",
+        side_effect=DatabaseError(f"database rejected {stored_secret}"),
+    )
+    smtp_ssl = mocker.patch("core.services.smtp.smtplib.SMTP_SSL")
+    if smtp_test_fails:
+        smtp_ssl.return_value.login.side_effect = SMTPAuthenticationError(
+            535, b"private SMTP response"
+        )
+
+    with caplog.at_level("ERROR"):
+        response = client.post(reverse("core:smtp-test"))
+
+    body = response.content.decode()
+    assert response.status_code == 200
+    assert response.context["form"].is_bound is False
+    assert "无法安全保存 SMTP 配置" in body
+    assert stored_secret not in body
+    assert stored_secret not in caplog.text
+    assert "database rejected" not in body
+    assert "database rejected" not in caplog.text
+    assert SMTPConfig.get_solo().is_verified is False
+
+
 @pytest.mark.django_db
 def test_authorization_code_is_never_rendered(client):
     """Binding the stored ciphertext or plaintext into the password field must fail this test."""
