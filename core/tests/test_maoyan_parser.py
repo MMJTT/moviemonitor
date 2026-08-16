@@ -139,8 +139,14 @@ def test_live_page_requires_one_nonempty_movie_name(adapter, target):
 @pytest.mark.parametrize(
     ("old", "new"),
     [
-        ("movieId=1545360", "movieId=9999999"),
-        ("movieId=1545360", "movieId=1545360&amp;showDate=2026-08-21"),
+        (
+            "/cinema/37534?poi=94710&amp;movieId=1545360&amp;tracking=discarded",
+            "/cinema/37534?poi=94710&amp;movieId=9999999",
+        ),
+        (
+            "/cinema/37534?poi=94710&amp;movieId=1545360&amp;tracking=discarded",
+            "/cinema/37534?poi=94710&amp;movieId=1545360&amp;showDate=2026-08-21",
+        ),
         (
             "/cinema/37534?poi=94710&amp;movieId=1545360&amp;tracking=discarded",
             "https://example.com/cinema/37534?poi=94710&amp;movieId=1545360",
@@ -157,14 +163,90 @@ def test_visible_booking_control_with_mismatched_url_is_a_structure_error(
         adapter.parse_html(html, target)
 
 
+def test_anchored_booking_control_with_changed_label_is_a_structure_error(adapter, target):
+    """Silently treating an unknown anchored CTA as closed must fail this test."""
+    html = read_fixture("live_open.html").replace(">选座购票</a>", ">立即购票</a>", 1)
+
+    with pytest.raises(PageStructureError):
+        adapter.parse_html(html, target)
+
+
+def test_booking_control_without_an_anchor_is_legitimately_closed(adapter, target):
+    """Treating a no-anchor closed-state control as malformed must fail this test."""
+    html = read_fixture("live_open.html").replace(
+        (
+            '<span class="buy-btn">\n'
+            '        <a href="/cinema/37534?poi=94710&amp;movieId=1545360&amp;'
+            'tracking=discarded">选座购票</a>\n'
+            "      </span>"
+        ),
+        '<span class="buy-btn">暂无场次</span>',
+    )
+
+    result = adapter.parse_html(html, target)
+
+    assert result.cinemas[0].bookable is False
+    assert result.cinemas[0].booking_url == ""
+
+
+@pytest.mark.parametrize(
+    "identity_href",
+    [
+        "https://example.com/cinema/37534?poi=94710&movieId=1545360",
+        "//example.com/cinema/37534?poi=94710&movieId=1545360",
+        "http://www.maoyan.com/cinema/37534?poi=94710&movieId=1545360",
+        "https://user@www.maoyan.com/cinema/37534?poi=94710&movieId=1545360",
+        "https://www.maoyan.com:444/cinema/37534?poi=94710&movieId=1545360",
+        "/cinema/37534?poi=94710&movieId=1545360#fragment",
+        "/cinema/37534?poi=94710&movieId=1545360&tracking=unexpected",
+        "/cinema/37534?poi=94710&movieId=1545360&movieId=1545360",
+        "/cinema/37534?poi=94710&movieId=9999999",
+        "/cinema/37534?poi=94710",
+        "/cinema/37534?movieId=1545360",
+        "/cinema/37534?poi=not-a-number&movieId=1545360",
+    ],
+)
+def test_live_cinema_identity_rejects_unsafe_or_conflicting_urls(
+    adapter, target, identity_href
+):
+    """Accepting an unsafe identity URL because its path looks valid must fail this test."""
+    html = read_fixture("live_open.html").replace(
+        "/cinema/37534?poi=94710&amp;movieId=1545360",
+        identity_href.replace("&", "&amp;"),
+        1,
+    )
+
+    with pytest.raises(PageStructureError):
+        adapter.parse_html(html, target)
+
+
+@pytest.mark.parametrize("host", ["maoyan.com", "www.maoyan.com"])
+def test_live_cinema_identity_accepts_https_maoyan_hosts(adapter, target, host):
+    """Rejecting a permitted absolute Maoyan identity URL must fail this test."""
+    html = read_fixture("live_open.html").replace(
+        "/cinema/37534?poi=94710&amp;movieId=1545360",
+        f"https://{host}/cinema/37534?poi=94710&amp;movieId=1545360",
+        1,
+    )
+
+    result = adapter.parse_html(html, target)
+
+    assert result.cinemas[0].cinema_id == "37534"
+
+
 @pytest.mark.parametrize(
     ("old", "new"),
     [
         (
-            '<a class="cinema-name" href="/cinema/37534?poi=94710">',
             (
-                '<a class="cinema-name" href="/cinema/37534?poi=94710">副名称</a>'
-                '<a class="cinema-name" href="/cinema/37534?poi=94710">'
+                '<a class="cinema-name" '
+                'href="/cinema/37534?poi=94710&amp;movieId=1545360">'
+            ),
+            (
+                '<a class="cinema-name" '
+                'href="/cinema/37534?poi=94710&amp;movieId=1545360">副名称</a>'
+                '<a class="cinema-name" '
+                'href="/cinema/37534?poi=94710&amp;movieId=1545360">'
             ),
         ),
         (

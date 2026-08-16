@@ -25,6 +25,7 @@ ALLOWED_FILTERS = frozenset(
 BASE_URL = "https://www.maoyan.com"
 BOOTSTRAP_URL = f"{BASE_URL}/"
 BOOKING_PARAMETERS = frozenset({"movieId", "poi", "showDate"})
+CINEMA_IDENTITY_PARAMETERS = frozenset({"movieId", "poi"})
 DESKTOP_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
@@ -250,7 +251,7 @@ class MaoyanAdapter:
             raise PageStructureError("cinema cell has no cinema name")
         name_link = name_links[0]
         name = name_link.get_text(" ", strip=True)
-        cinema_id = self._cinema_id_from_path(name_link["href"])
+        cinema_id = self._cinema_id_from_url(name_link["href"], target)
         if not name or cinema_id is None:
             raise PageStructureError("cinema cell has invalid identity")
 
@@ -261,14 +262,14 @@ class MaoyanAdapter:
         if booking_controls:
             control = booking_controls[0]
             links = [control] if control.name == "a" else control.select("a")
-            labelled_links = [
-                link for link in links if link.get_text(" ", strip=True) == "选座购票"
-            ]
-            has_booking_label = control.get_text(" ", strip=True) == "选座购票"
-            if has_booking_label or labelled_links:
-                if len(labelled_links) != 1 or not labelled_links[0].get("href"):
+            if links:
+                if (
+                    len(links) != 1
+                    or links[0].get_text(" ", strip=True) != "选座购票"
+                    or not links[0].get("href")
+                ):
                     raise PageStructureError("cinema cell has invalid booking control")
-                buy_link = labelled_links[0]
+                buy_link = links[0]
                 booking_url = self._validated_booking_url(buy_link["href"], cinema_id, target)
                 if not booking_url:
                     raise PageStructureError("cinema cell has invalid booking URL")
@@ -281,12 +282,40 @@ class MaoyanAdapter:
         )
 
     @staticmethod
-    def _cinema_id_from_path(value: str) -> str | None:
-        parsed = urlsplit(value)
+    def _cinema_id_from_url(value: str, target: ParsedTarget) -> str | None:
+        parsed = urlsplit(urljoin(BASE_URL, value))
+        try:
+            port = parsed.port
+        except ValueError:
+            return None
         path_parts = parsed.path.split("/")
-        if len(path_parts) == 3 and path_parts[1] == "cinema" and path_parts[2].isdigit():
-            return path_parts[2]
-        return None
+        if (
+            parsed.scheme != "https"
+            or parsed.hostname is None
+            or parsed.hostname.lower() not in MAOYAN_HOSTS
+            or parsed.username is not None
+            or parsed.password is not None
+            or port not in {None, 443}
+            or len(path_parts) != 3
+            or path_parts[1] != "cinema"
+            or not path_parts[2].isdigit()
+            or parsed.fragment
+        ):
+            return None
+
+        parameters = parse_qsl(parsed.query, keep_blank_values=True)
+        keys = [key for key, _ in parameters]
+        if len(keys) != len(set(keys)):
+            return None
+        if parameters:
+            values = dict(parameters)
+            if (
+                set(values) != CINEMA_IDENTITY_PARAMETERS
+                or values["movieId"] != target.movie_id
+                or not values["poi"].isdigit()
+            ):
+                return None
+        return path_parts[2]
 
     @staticmethod
     def _validated_booking_url(value: str, cinema_id: str, target: ParsedTarget) -> str:
