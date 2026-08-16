@@ -145,6 +145,50 @@ def test_dashboard_shows_active_task_status_and_allowed_actions(client, active_t
 
 
 @pytest.mark.django_db
+def test_dashboard_shows_every_active_task(client, active_task, task_factory):
+    """Returning only the newest task would hide another monitor and its controls."""
+    second = task_factory(
+        movie_id="2222222",
+        movie_name="第二部电影",
+        show_date=active_task.show_date + timedelta(days=1),
+        query_key="maoyan:10:second",
+        cinema_name="另一家影院",
+        normalized_cinema_name="另一家影院",
+    )
+
+    body = client.get(reverse("core:dashboard")).content.decode()
+
+    for task in (active_task, second):
+        assert task.movie_name in body
+        assert reverse("core:task-detail", args=[task.pk]) in body
+        assert reverse("core:task-run-now", args=[task.pk]) in body
+
+
+@pytest.mark.django_db
+def test_dashboard_keeps_recent_terminal_tasks_below_active_tasks(
+    client, active_task, task_factory
+):
+    """Dropping terminal history would make sent alerts and cancellations hard to audit."""
+    completed = task_factory(
+        status=MonitorTask.Status.COMPLETED,
+        next_check_at=None,
+        movie_id="3333333",
+        movie_name="已经完成的电影",
+        query_key="maoyan:10:completed",
+        cinema_name="历史影院",
+        normalized_cinema_name="历史影院",
+    )
+
+    body = client.get(reverse("core:dashboard")).content.decode()
+
+    assert "活动任务" in body
+    assert active_task.movie_name in body
+    assert "最近记录" in body
+    assert completed.movie_name in body
+    assert reverse("core:task-detail", args=[completed.pk]) in body
+
+
+@pytest.mark.django_db
 def test_dashboard_shows_terminal_outcome_and_new_task_action(
     client, verified_smtp, task_factory
 ):

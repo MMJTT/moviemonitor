@@ -76,7 +76,6 @@ class MonitorTask(models.Model):
     cinema_name = models.CharField(max_length=200)
     normalized_cinema_name = models.CharField(max_length=200)
     booking_url = models.URLField(max_length=1000, blank=True)
-    singleton_slot = models.BooleanField(default=True, editable=False)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.MONITORING)
     consecutive_failures = models.PositiveSmallIntegerField(default=0)
     last_error = models.CharField(max_length=200, blank=True)
@@ -93,9 +92,9 @@ class MonitorTask(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["singleton_slot"],
+                fields=["city_id", "movie_id", "show_date", "normalized_cinema_name"],
                 condition=Q(status__in=["MONITORING", "PAUSED", "DETECTED", "ERROR"]),
-                name="one_unfinished_monitor_task",
+                name="one_unfinished_task_per_target",
             )
         ]
 

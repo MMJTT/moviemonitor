@@ -44,6 +44,31 @@ def test_show_date_does_not_expire_until_next_local_day(active_task):
 
 
 @pytest.mark.django_db
+def test_all_past_date_tasks_expire_before_live_polling(task_factory):
+    """Expiring only one task would leave another past-date task eligible for polling."""
+    now = datetime(2026, 8, 21, 0, 0, tzinfo=SHANGHAI)
+    first = task_factory(show_date=date(2026, 8, 20))
+    second = task_factory(
+        show_date=date(2026, 8, 19),
+        movie_id="2222222",
+        movie_name="第二部电影",
+        query_key="maoyan:10:expired-second",
+        cinema_name="另一家影院",
+        normalized_cinema_name="另一家影院",
+    )
+
+    assert expire_due_task(now=now) is True
+
+    first.refresh_from_db()
+    second.refresh_from_db()
+    assert first.status == MonitorTask.Status.EXPIRED
+    assert second.status == MonitorTask.Status.EXPIRED
+    assert Notification.objects.filter(
+        task__in=[first, second], notification_type=Notification.Type.EXPIRY
+    ).count() == 2
+
+
+@pytest.mark.django_db
 def test_expiry_wins_over_pending_opening_delivery(opening_notification, mocker):
     """Allowing a pending opening email to send after the date boundary must fail this test."""
     now = datetime(2026, 8, 21, 0, 0, tzinfo=SHANGHAI)

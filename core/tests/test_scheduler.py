@@ -68,6 +68,29 @@ def test_due_work_does_not_check_future_or_paused_tasks(task_factory, mocker):
 
 
 @pytest.mark.django_db
+def test_due_work_checks_the_most_overdue_task_first(active_task, task_factory, mocker):
+    """Ordering by creation time would let an older task starve a more overdue task."""
+    now = timezone.now()
+    active_task.next_check_at = now - timezone.timedelta(minutes=1)
+    active_task.save(update_fields=["next_check_at"])
+    most_overdue = task_factory(
+        next_check_at=now - timezone.timedelta(minutes=2),
+        movie_id="2222222",
+        movie_name="第二部电影",
+        query_key="maoyan:10:overdue",
+        cinema_name="另一家影院",
+        normalized_cinema_name="另一家影院",
+    )
+    check = mocker.patch("core.scheduler.perform_check")
+    mocker.patch("core.scheduler.expire_due_task", return_value=False)
+    mocker.patch("core.scheduler.dispatch_due_notifications", return_value=0)
+
+    run_due_work(now=now)
+
+    check.assert_called_once_with(most_overdue.pk, now=now)
+
+
+@pytest.mark.django_db
 def test_due_work_sends_one_backlogged_notification_then_checks_due_task(
     active_task, task_factory, verified_smtp, mocker
 ):

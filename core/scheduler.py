@@ -37,7 +37,7 @@ def run_due_work(now=None) -> dict[str, int | bool]:
             MonitorTask.objects.select_for_update()
             .filter(status=MonitorTask.Status.MONITORING)
             .filter(Q(next_check_at__isnull=True) | Q(next_check_at__lte=now))
-            .order_by("created_at")
+            .order_by("next_check_at", "created_at", "pk")
             .values_list("pk", flat=True)
             .first()
         )

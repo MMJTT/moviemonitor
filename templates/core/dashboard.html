@@ -5,7 +5,7 @@
 {% block content %}
   <section class="hero dashboard-hero">
     <div class="hero-copy">
-      <p class="eyebrow"><span>Now screening</span> 本地单任务开票监控</p>
+      <p class="eyebrow"><span>Now screening</span> 本地多任务开票监控</p>
       <h1>盯住开票，<br><em>不必守着刷新。</em></h1>
       <p class="lede">锁定一部电影、一个日期和一家影院。系统在本机安静检查，开票或到期时只发送一次邮件。</p>
     </div>
@@ -25,7 +25,7 @@
       </div>
       <a class="button button-primary" href="{% url 'core:smtp-edit' %}">配置 SMTP</a>
     </section>
-  {% elif not task %}
+  {% elif not active_tasks and not recent_tasks %}
     <section class="empty-state ticket-surface">
       <div class="empty-index" aria-hidden="true">01</div>
       <p class="eyebrow">SMTP 已就绪</p>
@@ -35,47 +35,35 @@
     </section>
   {% endif %}
 
-  {% if task %}
-    <section class="task-card ticket-surface">
-      <div class="task-heading">
-        <div>
-          <p class="eyebrow">Current watch</p>
-          <h2>{{ task.movie_name }}</h2>
-          <div class="target-line" aria-label="监控目标">
-            <span>{{ task.show_date|date:"Y年n月j日" }}</span><span>{{ task.city_name }}</span><span>{{ task.cinema_name }}</span>
-          </div>
-        </div>
-        <span class="status status-{{ task.status|lower }}">{{ task.get_status_display }}</span>
+  {% if active_tasks %}
+    <section class="task-list-section" aria-labelledby="active-tasks-title">
+      <header class="section-heading">
+        <div><p class="eyebrow">Live queue</p><h2 id="active-tasks-title">活动任务</h2></div>
+        {% if smtp.is_verified %}<a class="button button-primary" href="{% url 'core:task-preview' %}">新建任务</a>{% endif %}
+      </header>
+      <div class="task-list">
+        {% for task in active_tasks %}{% include "core/_dashboard_task_card.html" %}{% endfor %}
       </div>
+    </section>
+  {% elif smtp.is_verified and recent_tasks %}
+    <section class="notice dashboard-ready">
+      <div><p class="eyebrow">Queue clear</p><h2>当前没有活动任务</h2><p>可以继续添加新的电影、日期和影院目标。</p></div>
+      <a class="button button-primary" href="{% url 'core:task-preview' %}">创建新的监控任务</a>
+    </section>
+  {% endif %}
 
-      <dl class="fact-grid">
-        <div><dt>上次检查</dt><dd>{{ task.last_checked_at|date:"Y-m-d H:i:s"|default:"尚未检查" }}</dd></div>
-        <div><dt>下次检查</dt><dd>{{ task.next_check_at|date:"Y-m-d H:i:s"|default:"未安排" }}</dd></div>
-        <div><dt>连续异常</dt><dd>{{ task.consecutive_failures }} 次</dd></div>
-        <div><dt>邮件状态</dt><dd>{% if notification %}{{ notification.get_status_display }}{% else %}尚无通知{% endif %}</dd></div>
-      </dl>
-
-      {% if task.last_error %}
-        <p class="notice notice-error" role="alert">最近错误：{{ task.last_error }}</p>
-      {% endif %}
-      {% if notification.last_error %}
-        <p class="notice notice-error" role="alert">邮件提示：{{ notification.last_error }}</p>
-      {% endif %}
-
-      <div class="actions">
-        <a class="button button-secondary" href="{% url 'core:task-detail' task.pk %}">查看详情与记录</a>
-        {% if task.status == "MONITORING" %}
-          <form method="post" action="{% url 'core:task-run-now' task.pk %}">{% csrf_token %}<button type="submit">立即检查</button></form>
-          <form method="post" action="{% url 'core:task-pause' task.pk %}">{% csrf_token %}<button type="submit">暂停</button></form>
-          <form method="post" action="{% url 'core:task-cancel' task.pk %}">{% csrf_token %}<button class="button-danger" type="submit">取消任务</button></form>
-        {% elif task.status == "PAUSED" or task.status == "ERROR" %}
-          <form method="post" action="{% url 'core:task-resume' task.pk %}">{% csrf_token %}<button type="submit">恢复监控</button></form>
-          <form method="post" action="{% url 'core:task-cancel' task.pk %}">{% csrf_token %}<button class="button-danger" type="submit">取消任务</button></form>
-        {% elif task.status == "DETECTED" %}
-          <form method="post" action="{% url 'core:task-cancel' task.pk %}">{% csrf_token %}<button class="button-danger" type="submit">取消任务</button></form>
-        {% else %}
-          {% if smtp.is_verified %}<a class="button button-primary" href="{% url 'core:task-preview' %}">创建新的监控任务</a>{% endif %}
-        {% endif %}
+  {% if recent_tasks %}
+    <section class="history-section" aria-labelledby="recent-tasks-title">
+      <header class="section-heading"><div><p class="eyebrow">Archive</p><h2 id="recent-tasks-title">最近记录</h2></div></header>
+      <div class="history-list">
+        {% for task in recent_tasks %}
+          <a class="history-row" href="{% url 'core:task-detail' task.pk %}">
+            <span class="history-date">{{ task.show_date|date:"m.d" }}</span>
+            <span class="history-title"><strong>{{ task.movie_name }}</strong><small>{{ task.city_name }} / {{ task.cinema_name }}</small></span>
+            <span class="status status-{{ task.status|lower }}">{{ task.get_status_display }}</span>
+            <span class="history-arrow" aria-hidden="true">↗</span>
+          </a>
+        {% endfor %}
       </div>
     </section>
   {% endif %}

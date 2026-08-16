@@ -177,15 +177,42 @@ def test_confirm_requires_exactly_one_visible_or_manual_cinema(client, verified_
     assert MonitorTask.objects.count() == 0
 
 
-@pytest.mark.django_db
-def test_second_unfinished_task_is_rejected(client, verified_smtp, active_task, signed_preview):
+@pytest.mark.django_db(transaction=True)
+def test_second_distinct_unfinished_task_is_created(
+    client, verified_smtp, active_task, signed_preview, mocker
+):
+    check_now = mocker.patch("core.services.tasks.enqueue_immediate_check")
+
     response = client.post(
         reverse("core:task-confirm"),
         {"signed_preview": signed_preview, "manual_cinema_name": "另一影院"},
     )
 
+    assert response.status_code == 302
+    assert MonitorTask.objects.count() == 2
+    created = MonitorTask.objects.exclude(pk=active_task.pk).get()
+    check_now.assert_called_once_with(created.pk)
+
+
+@pytest.mark.django_db
+def test_duplicate_unfinished_target_is_rejected(client, verified_smtp, task_factory):
+    task_factory(
+        show_date=date(2026, 8, 20),
+        cinema_name="MOViE MOViE 影城（前滩太古里店）",
+        normalized_cinema_name="movie movie 影城(前滩太古里店)",
+    )
+
+    response = client.post(
+        reverse("core:task-confirm"),
+        {
+            "signed_preview": sign_preview(preview_payload()),
+            "manual_cinema_name": "MOViE MOViE 影城（前滩太古里店）",
+        },
+    )
+
     assert response.status_code == 400
     assert MonitorTask.objects.count() == 1
+    assert "相同目标" in response.content.decode()
 
 
 def test_preview_signature_expires_after_thirty_minutes():

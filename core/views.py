@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from django.core import signing
 from django.db import transaction
+from django.db.models import Prefetch
 from django.http import Http404, HttpResponse, HttpResponseBadRequest, HttpResponseForbidden
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -32,16 +33,29 @@ from core.services.tasks import (
 
 
 def dashboard(request):
-    task = MonitorTask.objects.order_by("-created_at").first()
-    notification = None
-    if task is not None:
-        notification = task.notifications.order_by("-created_at", "-pk").first()
+    active_statuses = [
+        MonitorTask.Status.MONITORING,
+        MonitorTask.Status.PAUSED,
+        MonitorTask.Status.DETECTED,
+        MonitorTask.Status.ERROR,
+    ]
+    task_query = MonitorTask.objects.prefetch_related(
+        Prefetch(
+            "notifications",
+            queryset=Notification.objects.order_by("-created_at", "-pk"),
+            to_attr="dashboard_notifications",
+        )
+    )
+    active_tasks = task_query.filter(status__in=active_statuses).order_by(
+        "show_date", "created_at"
+    )
+    recent_tasks = task_query.exclude(status__in=active_statuses).order_by("-updated_at")[:10]
     return render(
         request,
         "core/dashboard.html",
         {
-            "task": task,
-            "notification": notification,
+            "active_tasks": active_tasks,
+            "recent_tasks": recent_tasks,
             "smtp": SMTPConfig.get_solo(),
             "setting": AppSetting.get_solo(),
         },

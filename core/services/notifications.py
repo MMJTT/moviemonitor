@@ -49,15 +49,15 @@ def expire_due_task(now=None):
     now = now or timezone.now()
     local_date = timezone.localdate(now)
     with opening_notification_transition(), transaction.atomic():
-        task = (
+        tasks = list(
             MonitorTask.objects.select_for_update()
             .filter(status__in=EXPIRABLE_TASK_STATUSES, show_date__lt=local_date)
             .order_by("created_at")
-            .first()
         )
-        if task is None:
+        if not tasks:
             return False
-        _expire_locked_task(task, now)
+        for task in tasks:
+            _expire_locked_task(task, now)
     return True
 
 

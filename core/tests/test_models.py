@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import pytest
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
@@ -32,11 +34,17 @@ def test_smtp_config_singleton_returns_the_same_record():
 
 
 @pytest.mark.django_db(transaction=True)
-def test_only_one_unfinished_task_is_allowed(task_factory):
-    task_factory(status=MonitorTask.Status.MONITORING)
+def test_multiple_unfinished_tasks_are_allowed(task_factory):
+    first = task_factory(status=MonitorTask.Status.MONITORING)
+    second = task_factory(
+        status=MonitorTask.Status.PAUSED,
+        movie_id="2222222",
+        movie_name="第二部电影",
+        show_date=first.show_date + timedelta(days=1),
+        query_key="maoyan:10:second",
+    )
 
-    with pytest.raises(IntegrityError):
-        task_factory(status=MonitorTask.Status.PAUSED)
+    assert MonitorTask.objects.filter(pk__in=[first.pk, second.pk]).count() == 2
 
 
 @pytest.mark.django_db(transaction=True)

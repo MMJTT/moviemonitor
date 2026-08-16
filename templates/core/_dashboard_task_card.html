@@ -1,0 +1,38 @@
+{% with notification=task.dashboard_notifications.0 %}
+  <article class="task-card ticket-surface">
+    <div class="task-heading">
+      <div>
+        <p class="eyebrow">Current watch</p>
+        <h3>{{ task.movie_name }}</h3>
+        <div class="target-line" aria-label="监控目标">
+          <span>{{ task.show_date|date:"Y年n月j日" }}</span><span>{{ task.city_name }}</span><span>{{ task.cinema_name }}</span>
+        </div>
+      </div>
+      <span class="status status-{{ task.status|lower }}">{{ task.get_status_display }}</span>
+    </div>
+
+    <dl class="fact-grid">
+      <div><dt>上次检查</dt><dd>{{ task.last_checked_at|date:"Y-m-d H:i:s"|default:"尚未检查" }}</dd></div>
+      <div><dt>下次检查</dt><dd>{{ task.next_check_at|date:"Y-m-d H:i:s"|default:"未安排" }}</dd></div>
+      <div><dt>连续异常</dt><dd>{{ task.consecutive_failures }} 次</dd></div>
+      <div><dt>邮件状态</dt><dd>{% if notification %}{{ notification.get_status_display }}{% else %}尚无通知{% endif %}</dd></div>
+    </dl>
+
+    {% if task.last_error %}<p class="notice notice-error" role="alert">最近错误：{{ task.last_error }}</p>{% endif %}
+    {% if notification.last_error %}<p class="notice notice-error" role="alert">邮件提示：{{ notification.last_error }}</p>{% endif %}
+
+    <div class="actions">
+      <a class="button button-secondary" href="{% url 'core:task-detail' task.pk %}">查看详情与记录</a>
+      {% if task.status == "MONITORING" %}
+        <form method="post" action="{% url 'core:task-run-now' task.pk %}">{% csrf_token %}<button type="submit">立即检查</button></form>
+        <form method="post" action="{% url 'core:task-pause' task.pk %}">{% csrf_token %}<button type="submit">暂停</button></form>
+        <form method="post" action="{% url 'core:task-cancel' task.pk %}">{% csrf_token %}<button class="button-danger" type="submit">取消任务</button></form>
+      {% elif task.status == "PAUSED" or task.status == "ERROR" %}
+        <form method="post" action="{% url 'core:task-resume' task.pk %}">{% csrf_token %}<button type="submit">恢复监控</button></form>
+        <form method="post" action="{% url 'core:task-cancel' task.pk %}">{% csrf_token %}<button class="button-danger" type="submit">取消任务</button></form>
+      {% elif task.status == "DETECTED" %}
+        <form method="post" action="{% url 'core:task-cancel' task.pk %}">{% csrf_token %}<button class="button-danger" type="submit">取消任务</button></form>
+      {% endif %}
+    </div>
+  </article>
+{% endwith %}

@@ -138,15 +138,6 @@ def create_task(signed_preview: str, cinema_id: str, manual_name: str) -> Monito
 
     try:
         with transaction.atomic():
-            if MonitorTask.objects.filter(
-                status__in=[
-                    MonitorTask.Status.MONITORING,
-                    MonitorTask.Status.PAUSED,
-                    MonitorTask.Status.DETECTED,
-                    MonitorTask.Status.ERROR,
-                ]
-            ).exists():
-                raise TaskCreationError("已有一个未完成的监控任务。")
             task = MonitorTask.objects.create(
                 source_url=payload.source_url,
                 normalized_url=payload.normalized_url,
@@ -163,7 +154,7 @@ def create_task(signed_preview: str, cinema_id: str, manual_name: str) -> Monito
             )
             transaction.on_commit(lambda: enqueue_immediate_check(task.pk))
     except IntegrityError as exc:
-        raise TaskCreationError("已有一个未完成的监控任务。") from exc
+        raise TaskCreationError("已有一个相同目标的未完成任务。") from exc
     return task
 
 
