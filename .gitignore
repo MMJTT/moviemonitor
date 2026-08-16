@@ -12,3 +12,6 @@ media/
 backups/
 logs/
 *.sqlite3
+*.egg-info/
+.ticketwatch.key
+db.sqlite3
