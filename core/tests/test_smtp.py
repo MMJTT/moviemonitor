@@ -1,15 +1,17 @@
 import smtplib
+from datetime import timedelta
 from email.message import EmailMessage
 from smtplib import SMTPAuthenticationError
 from unittest.mock import patch
 
 import pytest
+from django.db import DatabaseError
 from django.urls import reverse
 from django.utils import timezone
 
 from core.crypto import decrypt_secret, encrypt_secret
 from core.forms import SMTPConfigForm
-from core.models import SMTPConfig
+from core.models import MonitorTask, Notification, SMTPConfig
 from core.services.smtp import _connect, send_message
 
 
@@ -98,6 +100,42 @@ def test_stored_configuration_can_be_retested_only_with_post(smtp_ssl, client):
 
 @pytest.mark.django_db
 @patch("core.services.smtp.smtplib.SMTP_SSL")
+def test_successful_reverification_makes_pending_mail_due_and_wakes_scheduler(
+    smtp_ssl, client, task_factory, mocker, django_capture_on_commit_callbacks
+):
+    """Leaving repaired notification work asleep behind an old retry time must fail this test."""
+    now = timezone.now()
+    config = SMTPConfig.get_solo()
+    config.host = "smtp.163.com"
+    config.username = config.from_email = "sender@example.com"
+    config.recipient_email = "receiver@example.com"
+    config.encrypted_password = encrypt_secret("authorization-code")
+    config.is_verified = False
+    config.save()
+    task = task_factory(status=MonitorTask.Status.CANCELLED)
+    notification = Notification.objects.create(
+        task=task,
+        notification_type=Notification.Type.EXPIRY,
+        next_attempt_at=now + timedelta(hours=1),
+    )
+    wake = mocker.patch("core.views.wake_scheduler")
+    mocker.patch("core.views.timezone.now", return_value=now)
+
+    with django_capture_on_commit_callbacks(execute=True):
+        response = client.post(reverse("core:smtp-test"))
+
+    config.refresh_from_db()
+    notification.refresh_from_db()
+    assert response.status_code == 302
+    assert config.is_verified is True
+    assert config.verified_at == now
+    assert notification.status == Notification.Status.PENDING
+    assert notification.next_attempt_at == now
+    wake.assert_called_once_with()
+
+
+@pytest.mark.django_db
+@patch("core.services.smtp.smtplib.SMTP_SSL")
 def test_smtp_failure_renders_only_sanitized_error(smtp_ssl, client):
     """Rendering an SMTP response or secret instead of its safe summary must fail this test."""
     smtp_ssl.return_value.login.side_effect = SMTPAuthenticationError(
@@ -125,6 +163,36 @@ def test_smtp_failure_renders_only_sanitized_error(smtp_ssl, client):
     assert config.last_error in body
     assert "authorization-code" not in body
     assert "must never be shown" not in body
+
+
+@pytest.mark.django_db
+def test_smtp_save_failure_never_escapes_or_renders_submitted_credential(client, mocker):
+    """Letting credential persistence errors reach Django's debug page must fail this test."""
+    SMTPConfig.get_solo()
+    client.raise_request_exception = False
+    mocker.patch(
+        "core.forms.SMTPConfig.save",
+        side_effect=DatabaseError("database rejected authorization-code-private"),
+    )
+
+    response = client.post(
+        reverse("core:smtp-edit"),
+        {
+            "host": "smtp.163.com",
+            "port": 465,
+            "security": "ssl",
+            "username": "sender@example.com",
+            "from_email": "sender@example.com",
+            "recipient_email": "receiver@example.com",
+            "authorization_code": "authorization-code-private",
+        },
+    )
+
+    body = response.content.decode()
+    assert response.status_code == 200
+    assert "无法安全保存 SMTP 配置" in body
+    assert "authorization-code-private" not in body
+    assert "database rejected" not in body
 
 
 @pytest.mark.django_db

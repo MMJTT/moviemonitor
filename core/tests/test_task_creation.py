@@ -3,6 +3,7 @@ from datetime import date
 import pytest
 from django.core import signing
 from django.urls import reverse
+from freezegun import freeze_time
 
 from core.adapters.base import CheckResult, CinemaAvailability, ParsedTarget
 from core.models import MonitorTask
@@ -30,6 +31,27 @@ def test_preview_requires_verified_smtp(client):
     response = client.post(reverse("core:task-preview"), {"city_id": "10", "source_url": VALID_URL})
 
     assert response.status_code == 403
+
+
+@pytest.mark.django_db
+def test_preview_rejects_malformed_bracketed_authority_without_a_server_error(
+    client, verified_smtp
+):
+    """Allowing urlsplit's malformed-IPv6 ValueError to escape must fail this test."""
+    client.raise_request_exception = False
+
+    response = client.post(
+        reverse("core:task-preview"),
+        {
+            "city_id": "10",
+            "source_url": (
+                "https://[www.maoyan.com/cinemas?movieId=1545360&showDate=2026-08-20"
+            ),
+        },
+    )
+
+    assert response.status_code == 400
+    assert "invalid URL" in response.content.decode()
 
 
 @pytest.mark.django_db
@@ -171,3 +193,23 @@ def test_preview_signature_expires_after_thirty_minutes():
 
     with pytest.raises(signing.SignatureExpired):
         unsign_preview(signed, max_age=-1)
+
+
+@pytest.mark.django_db
+def test_confirm_rejects_current_date_preview_after_local_midnight(client, verified_smtp):
+    """Creating an already-past task from a still-valid signature must fail this test."""
+    with freeze_time("2026-08-20 15:50:00"):
+        signed = sign_preview(preview_payload())
+
+    with freeze_time("2026-08-20 16:10:00"):
+        response = client.post(
+            reverse("core:task-confirm"),
+            {
+                "signed_preview": signed,
+                "manual_cinema_name": "MOViE MOViE 影城（前滩太古里店）",
+            },
+        )
+
+    assert response.status_code == 400
+    assert "日期已过" in response.content.decode()
+    assert MonitorTask.objects.count() == 0

@@ -1,7 +1,7 @@
 from datetime import timedelta
 
 from django.core import signing
-from django.db import transaction
+from django.db import DatabaseError, transaction
 from django.http import Http404, HttpResponse, HttpResponseBadRequest, HttpResponseForbidden
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
@@ -9,6 +9,7 @@ from django.views.decorators.http import require_http_methods, require_POST
 
 from core.adapters.base import AdapterError
 from core.adapters.maoyan import MaoyanAdapter
+from core.crypto import CredentialKeyError
 from core.forms import (
     MAOYAN_CITIES,
     AppSettingForm,
@@ -16,7 +17,7 @@ from core.forms import (
     TaskConfirmForm,
     TaskPreviewForm,
 )
-from core.models import AppSetting, MonitorTask, SMTPConfig
+from core.models import AppSetting, MonitorTask, Notification, SMTPConfig
 from core.scheduler import wake_scheduler
 from core.services.smtp import sanitize_smtp_error, test_smtp_config
 from core.services.tasks import (
@@ -76,12 +77,30 @@ def task_detail(request, task_id):
     )
 
 
+def _mark_smtp_verified(config):
+    now = timezone.now()
+    with transaction.atomic():
+        config.is_verified = True
+        config.verified_at = now
+        config.last_error = ""
+        config.save()
+        Notification.objects.filter(status=Notification.Status.PENDING).update(
+            next_attempt_at=now,
+            updated_at=now,
+        )
+        transaction.on_commit(wake_scheduler)
+
+
 @require_http_methods(["GET", "POST"])
 def smtp_edit(request):
     config = SMTPConfig.get_solo()
     form = SMTPConfigForm(request.POST or None, instance=config)
     if request.method == "POST" and form.is_valid():
-        config = form.save()
+        try:
+            config = form.save()
+        except (CredentialKeyError, OSError, DatabaseError):
+            form.add_error(None, "无法安全保存 SMTP 配置，请检查本地密钥和数据库。")
+            return render(request, "core/smtp_form.html", {"form": form, "config": config})
         try:
             test_smtp_config(config)
         except Exception as exc:
@@ -91,10 +110,7 @@ def smtp_edit(request):
             config.save()
             return render(request, "core/smtp_form.html", {"form": form, "config": config})
 
-        config.is_verified = True
-        config.verified_at = timezone.now()
-        config.last_error = ""
-        config.save()
+        _mark_smtp_verified(config)
         return redirect("core:smtp-edit")
 
     return render(request, "core/smtp_form.html", {"form": form, "config": config})
@@ -116,10 +132,7 @@ def smtp_test(request):
             {"form": SMTPConfigForm(instance=config), "config": config},
         )
 
-    config.is_verified = True
-    config.verified_at = timezone.now()
-    config.last_error = ""
-    config.save()
+    _mark_smtp_verified(config)
     return redirect("core:smtp-edit")
 
 

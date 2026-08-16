@@ -11,7 +11,7 @@ from core.adapters.base import (
     RateLimitedError,
     TemporaryPlatformError,
 )
-from core.adapters.maoyan import normalize_cinema_name
+from core.adapters.maoyan import MaoyanAdapter, normalize_cinema_name
 from core.models import AppSetting, CheckRun, MonitorTask, Notification
 from core.services.tasks import perform_check
 
@@ -236,6 +236,44 @@ def test_platform_failures_are_sanitized_and_back_off(
     assert "secret" not in check.error_summary
     assert "secret" not in active_task.last_error
     assert active_task.consecutive_failures == 1
+    assert active_task.next_check_at == now + timedelta(seconds=120)
+    assert not Notification.objects.exists()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("malformed_link", ["identity", "booking"])
+def test_malformed_bracketed_remote_href_becomes_a_structure_check_failure(
+    active_task, mocker, malformed_link
+):
+    """Letting malformed remote authorities escape the adapter retry policy must fail this test."""
+    now = timezone.now()
+    identity_href = "/cinema/37534?poi=94710&movieId=1545360"
+    booking_href = "/cinema/37534?movieId=1545360"
+    if malformed_link == "identity":
+        identity_href = "https://[www.maoyan.com/cinema/37534"
+    else:
+        booking_href = "https://[www.maoyan.com/cinema/37534"
+    html = f"""
+        <html><body data-city="上海" data-movie-id="1545360" data-movie-name="奥德赛">
+          <span class="date-item active" data-date="{active_task.show_date.isoformat()}"></span>
+          <div class="cinema-cell">
+            <a class="cinema-name" href="{identity_href}">{active_task.cinema_name}</a>
+            <span class="buy-btn"><a href="{booking_href}">选座购票</a></span>
+          </div>
+        </body></html>
+    """
+
+    def parse_remote_page(target):
+        return MaoyanAdapter().parse_html(html, target)
+
+    mocker.patch("core.services.tasks.MaoyanAdapter.fetch", side_effect=parse_remote_page)
+
+    check = perform_check(active_task.pk, now=now)
+
+    active_task.refresh_from_db()
+    assert check.status == CheckRun.Status.STRUCTURE_ERROR
+    assert check.error_code == "platform-structure"
+    assert active_task.status == MonitorTask.Status.MONITORING
     assert active_task.next_check_at == now + timedelta(seconds=120)
     assert not Notification.objects.exists()
 

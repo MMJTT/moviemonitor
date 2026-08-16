@@ -103,12 +103,12 @@ def _build_message(notification, config, now):
     return message
 
 
-def _mark_permanent_failure(notification_id, error, *, unverify_smtp):
+def _park_for_smtp_repair(notification_id, error, *, unverify_smtp):
     with transaction.atomic():
         current = Notification.objects.select_for_update().get(pk=notification_id)
         if current.status != Notification.Status.SENDING:
             return
-        current.status = Notification.Status.PERMANENT_FAILED
+        current.status = Notification.Status.PENDING
         current.next_attempt_at = None
         current.last_error = error
         current.save(
@@ -117,6 +117,7 @@ def _mark_permanent_failure(notification_id, error, *, unverify_smtp):
         if unverify_smtp:
             SMTPConfig.objects.filter(pk=1).update(
                 is_verified=False,
+                verified_at=None,
                 last_error=error,
                 updated_at=timezone.now(),
             )
@@ -185,20 +186,18 @@ def deliver_notification(notification_id, now=None):
 
     config = SMTPConfig.get_solo()
     if not config.is_verified:
-        _mark_permanent_failure(
-            notification_id, "smtp-not-verified", unverify_smtp=False
-        )
+        _park_for_smtp_repair(notification_id, "smtp-not-verified", unverify_smtp=False)
         return
     notification.task = task
     try:
         send_message(config, _build_message(notification, config, now))
     except (smtplib.SMTPAuthenticationError, smtplib.SMTPRecipientsRefused) as exc:
-        _mark_permanent_failure(
+        _park_for_smtp_repair(
             notification_id, sanitize_smtp_error(exc), unverify_smtp=True
         )
         return
     except CredentialKeyError:
-        _mark_permanent_failure(
+        _park_for_smtp_repair(
             notification_id, "smtp-credential-unavailable", unverify_smtp=True
         )
         return
@@ -245,6 +244,8 @@ def deliver_notification(notification_id, now=None):
 
 def dispatch_due_notifications(now=None):
     now = now or timezone.now()
+    if not SMTPConfig.objects.filter(is_verified=True).exists():
+        return 0
     ids = list(
         Notification.objects.filter(status=Notification.Status.PENDING)
         .filter(Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now))

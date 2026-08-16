@@ -87,23 +87,99 @@ def test_five_scheduled_retries_end_in_failed(opening_notification, verified_smt
 
 
 @pytest.mark.django_db
-def test_authentication_error_permanently_fails_and_unverifies_smtp(
-    opening_notification, verified_smtp, mocker
+@pytest.mark.parametrize(
+    ("smtp_error", "expected_summary"),
+    [
+        (
+            smtplib.SMTPAuthenticationError(535, b"authorization-code is invalid"),
+            "SMTPAuthenticationError (535)",
+        ),
+        (
+            smtplib.SMTPRecipientsRefused(
+                {"receiver@example.com": (550, b"private recipient response")}
+            ),
+            "SMTPRecipientsRefused",
+        ),
+    ],
+)
+def test_configuration_smtp_error_parks_notification_and_unverifies_smtp(
+    opening_notification, verified_smtp, mocker, smtp_error, expected_summary
 ):
-    """Retrying invalid credentials or exposing their SMTP response must fail this test."""
+    """Discarding an opening after a repairable SMTP configuration error must fail this test."""
+    verified_smtp.verified_at = timezone.now()
+    verified_smtp.save()
     mocker.patch(
         "core.services.notifications.send_message",
-        side_effect=smtplib.SMTPAuthenticationError(535, b"authorization-code is invalid"),
+        side_effect=smtp_error,
     )
 
     deliver_notification(opening_notification.pk)
 
     opening_notification.refresh_from_db()
     verified_smtp.refresh_from_db()
-    assert opening_notification.status == Notification.Status.PERMANENT_FAILED
-    assert opening_notification.last_error == "SMTPAuthenticationError (535)"
+    assert opening_notification.status == Notification.Status.PENDING
+    assert opening_notification.next_attempt_at is None
+    assert opening_notification.retry_count == 0
+    assert opening_notification.last_error == expected_summary
     assert "authorization-code" not in opening_notification.last_error
     assert verified_smtp.is_verified is False
+    assert verified_smtp.verified_at is None
+
+
+@pytest.mark.django_db
+def test_delivery_claim_with_unverified_smtp_returns_to_pending(
+    opening_notification, verified_smtp, mocker
+):
+    """Turning an unverified configuration into permanent notification loss must fail this test."""
+    verified_smtp.is_verified = False
+    verified_smtp.save()
+    send = mocker.patch("core.services.notifications.send_message")
+
+    deliver_notification(opening_notification.pk)
+
+    opening_notification.refresh_from_db()
+    assert opening_notification.status == Notification.Status.PENDING
+    assert opening_notification.next_attempt_at is None
+    assert opening_notification.last_error == "smtp-not-verified"
+    send.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_dispatch_skips_pending_notifications_while_smtp_is_unverified(
+    opening_notification, verified_smtp, mocker
+):
+    """Reclaiming the same parked notification every scheduler second must fail this test."""
+    verified_smtp.is_verified = False
+    verified_smtp.save()
+    send = mocker.patch("core.services.notifications.send_message")
+
+    assert dispatch_due_notifications() == 0
+    assert dispatch_due_notifications() == 0
+
+    opening_notification.refresh_from_db()
+    assert opening_notification.status == Notification.Status.PENDING
+    assert opening_notification.last_error == ""
+    send.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_malformed_local_key_parks_claimed_notification_for_credential_repair(
+    opening_notification, verified_smtp, settings, tmp_path, mocker
+):
+    """Leaving a notification SENDING after malformed local-key decryption must fail this test."""
+    settings.TICKETWATCH_KEY_FILE = tmp_path / ".ticketwatch.key"
+    settings.TICKETWATCH_KEY_FILE.write_bytes(b"truncated-local-key")
+    transport = mocker.patch("core.services.smtp._connect").return_value
+
+    deliver_notification(opening_notification.pk)
+
+    opening_notification.refresh_from_db()
+    verified_smtp.refresh_from_db()
+    assert opening_notification.status == Notification.Status.PENDING
+    assert opening_notification.next_attempt_at is None
+    assert opening_notification.last_error == "smtp-credential-unavailable"
+    assert verified_smtp.is_verified is False
+    transport.login.assert_not_called()
 
 
 @pytest.mark.django_db

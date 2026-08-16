@@ -35,12 +35,19 @@ def _load_key(create):
     return key
 
 
+def _fernet(create):
+    try:
+        return Fernet(_load_key(create=create))
+    except ValueError as exc:
+        raise CredentialKeyError("credential key is invalid") from exc
+
+
 def encrypt_secret(value):
-    return Fernet(_load_key(create=True)).encrypt(value.encode("utf-8")).decode("ascii")
+    return _fernet(create=True).encrypt(value.encode("utf-8")).decode("ascii")
 
 
 def decrypt_secret(token):
     try:
-        return Fernet(_load_key(create=False)).decrypt(token.encode("ascii")).decode("utf-8")
+        return _fernet(create=False).decrypt(token.encode("ascii")).decode("utf-8")
     except InvalidToken as exc:
         raise CredentialKeyError("credential cannot be decrypted with the local key") from exc

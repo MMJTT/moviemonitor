@@ -49,7 +49,10 @@ class MaoyanAdapter:
         self.session = session or requests.Session()
 
     def validate_target(self, url: str, city_id: int, city_name: str) -> ParsedTarget:
-        parsed = urlsplit(url)
+        try:
+            parsed = urlsplit(url)
+        except ValueError as exc:
+            raise TargetValidationError("invalid URL") from exc
         self._validate_url_parts(parsed)
         parameters = parse_qsl(parsed.query, keep_blank_values=True)
         self._validate_parameters(parameters)
@@ -319,8 +322,8 @@ class MaoyanAdapter:
 
     @staticmethod
     def _cinema_id_from_url(value: str, target: ParsedTarget) -> str | None:
-        parsed = urlsplit(urljoin(BASE_URL, value))
         try:
+            parsed = urlsplit(urljoin(BASE_URL, value))
             port = parsed.port
         except ValueError:
             return None
@@ -359,9 +362,9 @@ class MaoyanAdapter:
 
     @staticmethod
     def _validated_booking_url(value: str, cinema_id: str, target: ParsedTarget) -> str:
-        absolute_url = urljoin(BASE_URL, value)
-        parsed = urlsplit(absolute_url)
         try:
+            absolute_url = urljoin(BASE_URL, value)
+            parsed = urlsplit(absolute_url)
             port = parsed.port
         except ValueError:
             return ""

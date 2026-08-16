@@ -46,3 +46,21 @@ def test_windows_rejects_decryption_before_reading_an_existing_key(settings, tmp
         decrypt_secret("invalid-ciphertext")
 
     assert key_path.read_bytes() == b"not a valid Fernet key"
+
+
+def test_malformed_local_key_is_a_credential_error_during_encryption(settings, tmp_path):
+    """Leaking Fernet's raw malformed-key ValueError from encryption must fail this test."""
+    settings.TICKETWATCH_KEY_FILE = tmp_path / ".ticketwatch.key"
+    settings.TICKETWATCH_KEY_FILE.write_bytes(b"truncated-local-key")
+
+    with pytest.raises(CredentialKeyError, match="invalid"):
+        encrypt_secret("authorization-code")
+
+
+def test_malformed_local_key_is_a_credential_error_during_decryption(settings, tmp_path):
+    """Leaking Fernet's raw malformed-key ValueError from decryption must fail this test."""
+    settings.TICKETWATCH_KEY_FILE = tmp_path / ".ticketwatch.key"
+    settings.TICKETWATCH_KEY_FILE.write_bytes(b"truncated-local-key")
+
+    with pytest.raises(CredentialKeyError, match="invalid"):
+        decrypt_secret("ciphertext")

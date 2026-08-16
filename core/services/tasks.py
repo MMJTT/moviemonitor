@@ -118,6 +118,8 @@ def create_task(signed_preview: str, cinema_id: str, manual_name: str) -> Monito
         raise TaskCreationError("请先验证 SMTP 配置。")
 
     payload = _payload_from_signed_preview(signed_preview)
+    if date.fromisoformat(payload.show_date) < timezone.localdate():
+        raise TaskCreationError("预览日期已过，请重新预览。")
     cinema_id = cinema_id.strip()
     manual_name = manual_name.strip()
     if bool(cinema_id) == bool(manual_name):
