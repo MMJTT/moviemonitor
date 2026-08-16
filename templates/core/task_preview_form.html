@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="utf-8">
+    <title>新建监控任务</title>
+  </head>
+  <body>
+    <h1>新建监控任务</h1>
+    <form method="post">
+      {% csrf_token %}
+      {{ form.as_p }}
+      <button type="submit">预览影院</button>
+    </form>
+  </body>
+</html>

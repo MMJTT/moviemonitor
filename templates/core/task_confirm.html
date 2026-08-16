@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-Hans">
+  <head>
+    <meta charset="utf-8">
+    <title>确认监控任务</title>
+  </head>
+  <body>
+    <h1>确认监控任务</h1>
+    {% if payload %}
+      <p>{{ payload.movie_name }} · {{ payload.show_date }} · {{ payload.city_name }}</p>
+    {% endif %}
+    <form method="post" action="{% url 'core:task-confirm' %}">
+      {% csrf_token %}
+      {{ form.signed_preview }}
+      {% if payload.cinemas %}
+        <fieldset>
+          <legend>当前可见影院</legend>
+          {% for cinema in payload.cinemas %}
+            <label><input type="radio" name="cinema_id" value="{{ cinema.id }}">{{ cinema.name }}</label>
+          {% endfor %}
+        </fieldset>
+      {% endif %}
+      <p>{{ form.manual_cinema_name.label_tag }} {{ form.manual_cinema_name }}</p>
+      {{ form.non_field_errors }}
+      <button type="submit">创建监控任务</button>
+    </form>
+  </body>
+</html>
