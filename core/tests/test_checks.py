@@ -120,6 +120,55 @@ def test_known_cinema_id_takes_precedence_over_name(active_task, mocker):
 
 
 @pytest.mark.django_db
+def test_later_bookable_duplicate_exact_match_detects_opening(active_task, mocker):
+    """Stopping at a closed duplicate before a later bookable exact match must fail this test."""
+    active_task.cinema_id = "37534"
+    active_task.save()
+    target = ParsedTarget(
+        platform="maoyan",
+        city_id=active_task.city_id,
+        city_name=active_task.city_name,
+        movie_id=active_task.movie_id,
+        show_date=active_task.show_date,
+        source_url=active_task.source_url,
+        normalized_url=active_task.normalized_url,
+        query_key=active_task.query_key,
+    )
+    result = CheckResult(
+        target=target,
+        movie_name=active_task.movie_name,
+        valid_page=True,
+        cinemas=(
+            CinemaAvailability(
+                cinema_id="37534",
+                name=active_task.cinema_name,
+                normalized_name=active_task.normalized_cinema_name,
+                bookable=False,
+                booking_url="",
+            ),
+            CinemaAvailability(
+                cinema_id="37534",
+                name=active_task.cinema_name,
+                normalized_name=active_task.normalized_cinema_name,
+                bookable=True,
+                booking_url="https://www.maoyan.com/cinema/37534?bookable=1",
+            ),
+        ),
+        content_fingerprint="duplicate-exact-fixture",
+    )
+    mocker.patch("core.services.tasks.MaoyanAdapter.fetch", return_value=result)
+
+    perform_check(active_task.pk)
+
+    active_task.refresh_from_db()
+    assert active_task.status == MonitorTask.Status.DETECTED
+    assert active_task.booking_url == "https://www.maoyan.com/cinema/37534?bookable=1"
+    assert active_task.notifications.filter(
+        notification_type=Notification.Type.OPENING
+    ).count() == 1
+
+
+@pytest.mark.django_db
 @pytest.mark.parametrize("valid_page, city_id", [(False, None), (True, 11)])
 def test_unproven_page_context_never_detects(active_task, mocker, valid_page, city_id):
     """Trusting an invalid or mismatched result context must fail this test."""

@@ -153,3 +153,21 @@ def test_preexisting_sending_notification_is_never_reclaimed(
     opening_notification.refresh_from_db()
     assert opening_notification.status == Notification.Status.SENDING
     send.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_cancelled_task_permanently_stops_pending_opening_mail(
+    opening_notification, verified_smtp, mocker
+):
+    """Sending a pending opening notification after task cancellation must fail this test."""
+    opening_notification.task.status = MonitorTask.Status.CANCELLED
+    opening_notification.task.save()
+    send = mocker.patch("core.services.notifications.send_message", return_value="accepted")
+
+    deliver_notification(opening_notification.pk)
+
+    opening_notification.refresh_from_db()
+    assert opening_notification.status == Notification.Status.PERMANENT_FAILED
+    assert opening_notification.last_error == "task-no-longer-detected"
+    assert opening_notification.sent_at is None
+    send.assert_not_called()

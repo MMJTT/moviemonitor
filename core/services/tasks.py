@@ -270,8 +270,15 @@ def perform_check(task_id, now=None):
         current.consecutive_failures = 0
         current.last_error = ""
         current.last_checked_at = now
-        match = next((cinema for cinema in result.cinemas if matches_target(current, cinema)), None)
-        if match is not None and match.bookable and match.booking_url:
+        match = next(
+            (
+                cinema
+                for cinema in result.cinemas
+                if matches_target(current, cinema) and cinema.bookable and cinema.booking_url
+            ),
+            None,
+        )
+        if match is not None:
             current.status = MonitorTask.Status.DETECTED
             current.cinema_id = match.cinema_id
             current.booking_url = match.booking_url

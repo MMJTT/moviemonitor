@@ -12,6 +12,7 @@ from core.services.smtp import sanitize_smtp_error, send_message
 
 RETRY_MINUTES = (1, 5, 15, 30, 60)
 EXPIRED_BEFORE_DELIVERY = "expired-before-delivery"
+TASK_NO_LONGER_DETECTED = "task-no-longer-detected"
 
 EXPIRABLE_TASK_STATUSES = (
     MonitorTask.Status.MONITORING,
@@ -157,16 +158,11 @@ def deliver_notification(notification_id, now=None):
         if notification is None:
             return
         task = MonitorTask.objects.select_for_update().get(pk=notification.task_id)
-        if (
-            notification.notification_type == Notification.Type.OPENING
-            and task.show_date < timezone.localdate(now)
-        ):
-            if task.status in EXPIRABLE_TASK_STATUSES:
-                _expire_locked_task(task, now)
-            else:
+        if notification.notification_type == Notification.Type.OPENING:
+            if task.status != MonitorTask.Status.DETECTED:
                 notification.status = Notification.Status.PERMANENT_FAILED
                 notification.next_attempt_at = None
-                notification.last_error = EXPIRED_BEFORE_DELIVERY
+                notification.last_error = TASK_NO_LONGER_DETECTED
                 notification.save(
                     update_fields=[
                         "status",
@@ -175,7 +171,10 @@ def deliver_notification(notification_id, now=None):
                         "updated_at",
                     ]
                 )
-            return
+                return
+            if task.show_date < timezone.localdate(now):
+                _expire_locked_task(task, now)
+                return
         notification.status = Notification.Status.SENDING
         notification.message_id = notification.message_id or _message_id(notification)
         notification.next_attempt_at = None
