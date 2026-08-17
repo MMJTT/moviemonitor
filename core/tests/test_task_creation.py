@@ -7,6 +7,7 @@ from freezegun import freeze_time
 
 from core.adapters.base import CheckResult, CinemaAvailability, ParsedTarget
 from core.models import MonitorTask
+from core.services.agent_mail import AgentMailAuthError
 from core.services.tasks import PreviewCinema, TaskPreviewPayload, sign_preview, unsign_preview
 
 VALID_URL = "https://www.maoyan.com/cinemas?movieId=1545360&showDate=2026-08-20"
@@ -31,6 +32,31 @@ def test_preview_requires_verified_smtp(client):
     response = client.post(reverse("core:task-preview"), {"city_id": "10", "source_url": VALID_URL})
 
     assert response.status_code == 403
+
+
+@pytest.mark.django_db
+def test_confirm_rechecks_agent_mail_identity_and_disables_stale_verification(
+    client, verified_smtp, mocker
+):
+    mocker.patch(
+        "core.services.tasks.verify_agent_mail",
+        side_effect=AgentMailAuthError("agent-mail-auth-required"),
+    )
+
+    response = client.post(
+        reverse("core:task-confirm"),
+        {
+            "signed_preview": sign_preview(preview_payload()),
+            "manual_cinema_name": "目标影院",
+        },
+    )
+
+    verified_smtp.refresh_from_db()
+    assert response.status_code == 400
+    assert "邮件设置重新授权" in response.content.decode()
+    assert verified_smtp.is_verified is False
+    assert verified_smtp.last_error == "agent-mail-auth-required"
+    assert MonitorTask.objects.count() == 0
 
 
 @pytest.mark.django_db

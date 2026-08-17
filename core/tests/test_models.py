@@ -4,7 +4,7 @@ import pytest
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 
-from core.models import AppSetting, MonitorTask, Notification, SMTPConfig
+from core.models import AgentMailConfig, AppSetting, MonitorTask, Notification
 
 
 @pytest.mark.django_db
@@ -25,12 +25,12 @@ def test_app_settings_singleton_returns_the_same_record():
 
 
 @pytest.mark.django_db
-def test_smtp_config_singleton_returns_the_same_record():
-    first = SMTPConfig.get_solo()
-    second = SMTPConfig.get_solo()
+def test_agent_mail_config_singleton_returns_the_same_record():
+    first = AgentMailConfig.get_solo()
+    second = AgentMailConfig.get_solo()
 
     assert first.pk == second.pk == 1
-    assert SMTPConfig.objects.count() == 1
+    assert AgentMailConfig.objects.count() == 1
 
 
 @pytest.mark.django_db(transaction=True)

@@ -17,7 +17,7 @@ python3.12 -m venv .venv
 
 ## 使用流程
 
-1. 打开“SMTP”，填写并发送测试邮件。测试成功前不能创建任务。
+1. 打开“邮件”，填写收件地址并发送测试邮件。测试成功前不能创建任务。
 2. 打开“新建任务”，选择城市并粘贴猫眼影院列表的 HTTPS 链接。链接必须包含数字 `movieId` 和 `YYYY-MM-DD` 格式的 `showDate`。
 3. 预览服务端验证后的电影、日期和影院列表，选择一家可见影院；如果影院尚未出现，也可以手动输入完整影院名称。
 4. 创建任务。调度器会立即被唤醒检查，之后按设置中的固定间隔继续。
@@ -25,19 +25,17 @@ python3.12 -m venv .venv
 
 同一时间可以存在多个未结束任务，每个任务只监控一家影院。相同城市、电影、日期和影院的未结束任务不能重复创建，以避免重复请求和重复邮件。
 
-## SMTP 与本地密钥
+## Agent Mail
 
-邮箱服务通常要求使用单独生成的 SMTP 授权码，不能直接使用邮箱登录密码。以 QQ 邮箱为例，常见配置是：
+应用固定使用 `mijiatong@agent.qq.com` 发件，不保存个人邮箱密码或 SMTP 授权码。首次运行前安装并授权 Agent Mail CLI：
 
-- SMTP 主机：`smtp.qq.com`
-- 端口：`465`
-- 连接安全：`SSL/TLS`
-- 用户名和发件邮箱：你的完整 QQ 邮箱地址，例如 `你的QQ号@qq.com`
-- 授权码：在 QQ 邮箱设置中开启 SMTP 服务后生成
+```bash
+npm install -g @tencent-qqmail/agently-cli
+AGENTLY_WORKSPACE=codex agently-cli auth login
+AGENTLY_WORKSPACE=codex agently-cli +me
+```
 
-保存配置会先发送测试邮件，成功后才标记为已验证。授权码使用 Fernet 加密后保存在 SQLite 中，网页不会回显授权码或密文。
-
-首次保存授权码时，应用会在项目目录生成权限受限的 `.ticketwatch.key`。请将 SQLite 数据库与这个密钥作为一组备份，并且不要提交、分享或覆盖密钥。数据库中已有密文但密钥丢失时，原授权码无法恢复；需要重新输入授权码并再次测试 SMTP。仅备份数据库而不备份密钥不足以恢复邮件配置。
+程序固定使用 Agent Mail 的 `codex` workspace；上述 `+me` 命令显示的主邮箱必须是 `mijiatong@agent.qq.com`。OAuth 授权由 CLI 保存在 macOS 钥匙串中；TicketWatch 的 SQLite 只保存收件地址与验证状态。保存邮件设置时会先发送测试邮件，成功后才允许创建任务。授权失效时重新运行 `AGENTLY_WORKSPACE=codex agently-cli auth login`，再回到“邮件”页重新测试。
 
 ## 间隔、异常与恢复
 
@@ -45,14 +43,13 @@ python3.12 -m venv .venv
 
 网络、限流、验证码或页面结构异常不会被当作开票。平台或结构异常连续达到五次后，任务进入 `ERROR` 并停止自动检查。请先用浏览器确认猫眼页面和链接仍正常，再在仪表盘或详情页点击“恢复监控”；恢复会清除连续失败计数并安排一次立即检查。也可以直接取消任务。
 
-如果通知显示“发送中”，代表进程可能在 SMTP 已接受邮件后中断，发送结果不确定。应用不会自动重发这种通知，以避免重复邮件。
+如果通知显示“发送中”，代表进程可能在 Agent Mail 已接收邮件后中断，发送结果不确定。应用不会自动重发这种通知，以避免重复邮件。
 
 ## 本地数据
 
 - `db.sqlite3`：任务、检查计划、检查摘要和通知状态。
-- `.ticketwatch.key`：解密 SMTP 授权码所需的本地密钥。
 
-两者都已加入 Git 忽略规则。页面和日志不会保存或显示完整猫眼响应、完整邮件正文、Cookie、SMTP 授权码或凭据密文。
+数据库已加入 Git 忽略规则。页面和日志不会保存或显示完整猫眼响应、完整邮件正文、Cookie 或 Agent Mail OAuth Token。
 
 ## MVP 限制
 
@@ -64,7 +61,7 @@ python3.12 -m venv .venv
 
 ## 开发检查
 
-自动测试只使用固定、去敏的猫眼 HTML 和模拟 SMTP，不会访问真实猫眼或发送真实邮件：
+自动测试只使用固定、去敏的猫眼 HTML 和模拟 Agent Mail，不会访问真实猫眼或发送真实邮件：
 
 ```bash
 .venv/bin/pytest -v

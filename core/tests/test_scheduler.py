@@ -106,7 +106,9 @@ def test_due_work_sends_one_backlogged_notification_then_checks_due_task(
             status=Notification.Status.PENDING,
             next_attempt_at=now,
         )
-    send = mocker.patch("core.services.notifications.send_message", return_value="accepted")
+    send = mocker.patch(
+        "core.services.notifications.send_agent_mail", return_value="queued"
+    )
     check = mocker.patch("core.scheduler.perform_check")
 
     outcome = run_due_work(now=now)

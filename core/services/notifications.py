@@ -1,14 +1,18 @@
-import smtplib
+from dataclasses import dataclass
 from datetime import timedelta
-from email.message import EmailMessage
 
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from core.crypto import CredentialKeyError
-from core.models import MonitorTask, Notification, SMTPConfig
-from core.services.smtp import sanitize_smtp_error, send_message
+from core.models import AgentMailConfig, MonitorTask, Notification
+from core.services.agent_mail import (
+    AgentMailAuthError,
+    AgentMailConfigError,
+    AgentMailPermanentError,
+    AgentMailTemporaryError,
+    send_agent_mail,
+)
 from core.services.tasks import TASK_NO_LONGER_DETECTED, opening_notification_transition
 
 RETRY_MINUTES = (1, 5, 15, 30, 60)
@@ -70,14 +74,16 @@ def _local_timestamp(value):
     return timezone.localtime(value).strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
-def _build_message(notification, config, now):
+@dataclass(frozen=True)
+class OutgoingMail:
+    subject: str
+    body: str
+
+
+def _build_message(notification, now):
     task = notification.task
-    message = EmailMessage()
-    message["From"] = config.from_email
-    message["To"] = config.recipient_email
-    message["Message-ID"] = notification.message_id
     if notification.notification_type == Notification.Type.OPENING:
-        message["Subject"] = f"[TicketWatch] {task.movie_name} 已在 {task.cinema_name} 开票"
+        subject = f"[TicketWatch] {task.movie_name} 已在 {task.cinema_name} 开票"
         event_time = task.detected_at or now
         lines = [
             f"电影：{task.movie_name}",
@@ -89,7 +95,7 @@ def _build_message(notification, config, now):
             f"购票链接：{task.booking_url}",
         ]
     else:
-        message["Subject"] = f"[TicketWatch] {task.movie_name} 监控已到期"
+        subject = f"[TicketWatch] {task.movie_name} 监控已到期"
         event_time = task.expired_at or now
         lines = [
             f"电影：{task.movie_name}",
@@ -99,11 +105,10 @@ def _build_message(notification, config, now):
             f"到期时间：{_local_timestamp(event_time)}",
             f"监控链接：{task.source_url}",
         ]
-    message.set_content("\n".join(lines))
-    return message
+    return OutgoingMail(subject=subject, body="\n".join(lines))
 
 
-def _park_for_smtp_repair(notification_id, error, *, unverify_smtp):
+def _park_for_mail_repair(notification_id, error, *, unverify_mail):
     with transaction.atomic():
         current = Notification.objects.select_for_update().get(pk=notification_id)
         if current.status != Notification.Status.SENDING:
@@ -114,8 +119,8 @@ def _park_for_smtp_repair(notification_id, error, *, unverify_smtp):
         current.save(
             update_fields=["status", "next_attempt_at", "last_error", "updated_at"]
         )
-        if unverify_smtp:
-            SMTPConfig.objects.filter(pk=1).update(
+        if unverify_mail:
+            AgentMailConfig.objects.filter(pk=1).update(
                 is_verified=False,
                 verified_at=None,
                 last_error=error,
@@ -145,6 +150,19 @@ def _reschedule_notification(notification_id, error, now):
                 "last_error",
                 "updated_at",
             ]
+        )
+
+
+def _fail_notification_permanently(notification_id, error):
+    with transaction.atomic():
+        current = Notification.objects.select_for_update().get(pk=notification_id)
+        if current.status != Notification.Status.SENDING:
+            return
+        current.status = Notification.Status.PERMANENT_FAILED
+        current.next_attempt_at = None
+        current.last_error = error
+        current.save(
+            update_fields=["status", "next_attempt_at", "last_error", "updated_at"]
         )
 
 
@@ -184,25 +202,26 @@ def deliver_notification(notification_id, now=None):
             update_fields=["status", "message_id", "next_attempt_at", "updated_at"]
         )
 
-    config = SMTPConfig.get_solo()
+    config = AgentMailConfig.get_solo()
     if not config.is_verified:
-        _park_for_smtp_repair(notification_id, "smtp-not-verified", unverify_smtp=False)
+        _park_for_mail_repair(
+            notification_id, "agent-mail-not-verified", unverify_mail=False
+        )
         return
     notification.task = task
+    outgoing = _build_message(notification, now)
     try:
-        send_message(config, _build_message(notification, config, now))
-    except (smtplib.SMTPAuthenticationError, smtplib.SMTPRecipientsRefused) as exc:
-        _park_for_smtp_repair(
-            notification_id, sanitize_smtp_error(exc), unverify_smtp=True
+        response = send_agent_mail(
+            config.recipient_email, outgoing.subject, outgoing.body
         )
+    except (AgentMailAuthError, AgentMailConfigError) as exc:
+        _park_for_mail_repair(notification_id, str(exc), unverify_mail=True)
         return
-    except CredentialKeyError:
-        _park_for_smtp_repair(
-            notification_id, "smtp-credential-unavailable", unverify_smtp=True
-        )
+    except AgentMailTemporaryError as exc:
+        _reschedule_notification(notification_id, str(exc), now)
         return
-    except (OSError, smtplib.SMTPException) as exc:
-        _reschedule_notification(notification_id, sanitize_smtp_error(exc), now)
+    except AgentMailPermanentError as exc:
+        _fail_notification_permanently(notification_id, str(exc))
         return
 
     with transaction.atomic():
@@ -210,14 +229,14 @@ def deliver_notification(notification_id, now=None):
         if current.status != Notification.Status.SENDING:
             return
         current.status = Notification.Status.SENT
-        current.smtp_response = "accepted"
+        current.transport_response = response
         current.last_error = ""
         current.next_attempt_at = None
         current.sent_at = now
         current.save(
             update_fields=[
                 "status",
-                "smtp_response",
+                "transport_response",
                 "last_error",
                 "next_attempt_at",
                 "sent_at",
@@ -244,7 +263,7 @@ def deliver_notification(notification_id, now=None):
 
 def dispatch_due_notifications(now=None):
     now = now or timezone.now()
-    if not SMTPConfig.objects.filter(is_verified=True).exists():
+    if not AgentMailConfig.objects.filter(is_verified=True).exists():
         return 0
     ids = list(
         Notification.objects.filter(status=Notification.Status.PENDING)

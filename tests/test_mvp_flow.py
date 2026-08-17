@@ -9,8 +9,7 @@ from django.utils import timezone
 from freezegun import freeze_time
 
 from core.adapters.base import CheckResult, ParsedTarget, TemporaryPlatformError
-from core.crypto import decrypt_secret
-from core.models import AppSetting, CheckRun, MonitorTask, Notification, SMTPConfig
+from core.models import AgentMailConfig, AppSetting, CheckRun, MonitorTask, Notification
 from core.scheduler import run_due_work, set_process_scheduler
 from core.services.tasks import perform_check
 
@@ -78,14 +77,13 @@ def active_task(task_factory):
 
 
 @pytest.fixture
-def verified_smtp(db):
-    config = SMTPConfig.get_solo()
-    config.host = "smtp.example.com"
-    config.username = config.from_email = "sender@example.com"
+def verified_smtp(db, mocker):
+    config = AgentMailConfig.get_solo()
     config.recipient_email = "receiver@example.com"
-    config.encrypted_password = "test-ciphertext"
     config.is_verified = True
+    config.verified_at = timezone.now()
     config.save()
+    mocker.patch("core.services.tasks.verify_agent_mail", return_value=config.sender_email)
     return config
 
 
@@ -97,19 +95,19 @@ def clear_process_scheduler():
 
 
 @pytest.mark.django_db
-def test_dashboard_guides_first_run_to_smtp(client):
-    """Removing the SMTP prerequisite guidance would strand a first-time user."""
+def test_dashboard_guides_first_run_to_agent_mail(client):
+    """Removing the mail prerequisite guidance would strand a first-time user."""
     response = client.get(reverse("core:dashboard"))
 
     body = response.content.decode()
     assert response.status_code == 200
-    assert "先配置并测试 SMTP" in body
-    assert reverse("core:smtp-edit") in body
+    assert "先验证 Agent Mail" in body
+    assert reverse("core:mail-edit") in body
 
 
 @pytest.mark.django_db
 def test_dashboard_guides_verified_user_to_new_task(client, verified_smtp):
-    """Hiding the next step after SMTP verification would break the local setup flow."""
+    """Hiding the next step after mail verification would break the local setup flow."""
     body = client.get(reverse("core:dashboard")).content.decode()
 
     assert "创建监控任务" in body
@@ -117,12 +115,12 @@ def test_dashboard_guides_verified_user_to_new_task(client, verified_smtp):
 
 
 @pytest.mark.django_db
-def test_unverified_user_opening_new_task_is_guided_to_smtp(client):
+def test_unverified_user_opening_new_task_is_guided_to_mail_settings(client):
     """A raw forbidden page on first-run navigation would break the guided setup flow."""
     response = client.get(reverse("core:task-preview"))
 
     assert response.status_code == 302
-    assert response.url == reverse("core:smtp-edit")
+    assert response.url == reverse("core:mail-edit")
 
 
 @pytest.mark.django_db
@@ -338,7 +336,7 @@ def test_task_detail_shows_only_twenty_newest_checks_and_notifications(
 
 @pytest.mark.django_db
 def test_task_detail_never_renders_sensitive_or_full_payload_fields(client, active_task):
-    """Rendering storage-only payload fields could disclose remote or SMTP content."""
+    """Rendering storage-only payload fields could disclose transport content."""
     check = CheckRun.objects.create(
         task=active_task,
         status=CheckRun.Status.STRUCTURE_ERROR,
@@ -350,7 +348,7 @@ def test_task_detail_never_renders_sensitive_or_full_payload_fields(client, acti
     notification = Notification.objects.create(
         task=active_task,
         notification_type=Notification.Type.OPENING,
-        smtp_response="smtp-response-private",
+        transport_response="transport-response-private",
         last_error="安全的通知摘要",
     )
 
@@ -359,7 +357,7 @@ def test_task_detail_never_renders_sensitive_or_full_payload_fields(client, acti
     assert check.error_summary in body
     assert notification.last_error in body
     assert check.content_fingerprint not in body
-    assert notification.smtp_response not in body
+    assert notification.transport_response not in body
 
 
 @pytest.mark.django_db
@@ -385,10 +383,10 @@ def test_task_detail_warns_that_sending_notification_result_is_uncertain(
 @pytest.mark.django_db
 def test_primary_pages_share_local_navigation_and_stylesheet(client, verified_smtp):
     """Standalone pages without local navigation or styling would fragment the workflow."""
-    for route_name in ("core:dashboard", "core:smtp-edit", "core:task-preview", "core:settings"):
+    for route_name in ("core:dashboard", "core:mail-edit", "core:task-preview", "core:settings"):
         body = client.get(reverse(route_name)).content.decode()
         assert reverse("core:dashboard") in body
-        assert reverse("core:smtp-edit") in body
+        assert reverse("core:mail-edit") in body
         assert reverse("core:settings") in body
         assert "/static/css/app.css" in body
         assert "cdn" not in body.casefold()
@@ -406,7 +404,7 @@ def test_primary_pages_expose_accessible_navigation_state(client, verified_smtp)
     expected = {
         "core:dashboard": "仪表盘",
         "core:task-preview": "新建任务",
-        "core:smtp-edit": "SMTP",
+        "core:mail-edit": "邮件",
         "core:settings": "设置",
     }
 
@@ -422,12 +420,14 @@ def test_primary_pages_expose_accessible_navigation_state(client, verified_smtp)
 @freeze_time("2026-08-16 04:00:00")
 @responses.activate
 def test_mocked_local_flow_sends_one_opening_mail_and_completes(
-    client, settings, tmp_path, mocker, django_capture_on_commit_callbacks
+    client, mocker, django_capture_on_commit_callbacks
 ):
     """Breaking any closed-loop boundary must stop completion or duplicate the opening mail."""
-    settings.TICKETWATCH_KEY_FILE = tmp_path / ".ticketwatch.key"
-    smtp_ssl = mocker.patch("core.services.smtp.smtplib.SMTP_SSL")
-    smtp_ssl.return_value.send_message.return_value = {}
+    test_mail = mocker.patch("core.views.test_agent_mail_config", return_value="queued")
+    mocker.patch("core.services.tasks.verify_agent_mail", return_value="mijiatong@agent.qq.com")
+    send_mail = mocker.patch(
+        "core.services.notifications.send_agent_mail", return_value="queued"
+    )
     responses.add(
         responses.GET,
         "https://www.maoyan.com/",
@@ -441,30 +441,20 @@ def test_mocked_local_flow_sends_one_opening_mail_and_completes(
         status=200,
     )
 
-    smtp_page = client.get(reverse("core:smtp-edit")).content.decode()
-    assert "smtp.qq.com" in smtp_page
-    assert "SSL" in smtp_page
-    assert "465" in smtp_page
+    mail_page = client.get(reverse("core:mail-edit")).content.decode()
+    assert "mijiatong@agent.qq.com" in mail_page
+    assert "Agent Mail CLI" in mail_page
 
-    smtp_response = client.post(
-        reverse("core:smtp-edit"),
-        {
-            "host": "smtp.qq.com",
-            "port": 465,
-            "security": SMTPConfig.Security.SSL,
-            "username": "ticketwatch-test@qq.com",
-            "from_email": "ticketwatch-test@qq.com",
-            "recipient_email": "ticketwatch-test@qq.com",
-            "authorization_code": "local-test-authorization-code",
-        },
+    mail_response = client.post(
+        reverse("core:mail-edit"),
+        {"recipient_email": "ticketwatch-test@qq.com"},
         follow=True,
     )
 
-    config = SMTPConfig.get_solo()
-    assert smtp_response.status_code == 200
+    config = AgentMailConfig.get_solo()
+    assert mail_response.status_code == 200
     assert config.is_verified is True
-    assert config.encrypted_password != "local-test-authorization-code"
-    assert decrypt_secret(config.encrypted_password) == "local-test-authorization-code"
+    test_mail.assert_called_once_with(config)
 
     preview = client.post(
         reverse("core:task-preview"),
@@ -500,7 +490,7 @@ def test_mocked_local_flow_sends_one_opening_mail_and_completes(
     assert delivery_pass["notifications"] == 1
     assert notification.status == Notification.Status.SENT
     assert task.status == MonitorTask.Status.COMPLETED
-    assert smtp_ssl.return_value.send_message.call_count == 2
+    assert send_mail.call_count == 1
 
     completed_body = client.get(reverse("core:dashboard")).content.decode()
     assert "已完成" in completed_body
@@ -508,5 +498,5 @@ def test_mocked_local_flow_sends_one_opening_mail_and_completes(
 
     no_duplicate_pass = run_due_work(now=now)
     assert no_duplicate_pass == {"expired": False, "notifications": 0, "checked": False}
-    assert smtp_ssl.return_value.send_message.call_count == 2
+    assert send_mail.call_count == 1
     assert task.notifications.filter(notification_type=Notification.Type.OPENING).count() == 1

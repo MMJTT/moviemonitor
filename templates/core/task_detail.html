@@ -75,7 +75,7 @@
     {% if notifications %}
       {% for item in notifications %}
         {% if item.status == "SENDING" %}
-          <p class="notice notice-warning" role="alert">邮件在进程中断前可能已经被 SMTP 接受，发送结果不确定。为避免重复邮件，应用不会自动重发。</p>
+          <p class="notice notice-warning" role="alert">邮件在进程中断前可能已经被 Agent Mail 接收，发送结果不确定。为避免重复邮件，应用不会自动重发。</p>
         {% endif %}
       {% endfor %}
       <div class="table-scroll">

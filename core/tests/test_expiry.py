@@ -74,7 +74,7 @@ def test_expiry_wins_over_pending_opening_delivery(opening_notification, mocker)
     now = datetime(2026, 8, 21, 0, 0, tzinfo=SHANGHAI)
     opening_notification.task.show_date = date(2026, 8, 20)
     opening_notification.task.save()
-    send = mocker.patch("core.services.notifications.send_message")
+    send = mocker.patch("core.services.notifications.send_agent_mail")
 
     assert expire_due_task(now=now) is True
     deliver_notification(opening_notification.pk, now=now)
@@ -96,7 +96,7 @@ def test_direct_opening_delivery_at_boundary_expires_instead(opening_notificatio
     now = datetime(2026, 8, 21, 0, 0, tzinfo=SHANGHAI)
     opening_notification.task.show_date = date(2026, 8, 20)
     opening_notification.task.save()
-    send = mocker.patch("core.services.notifications.send_message")
+    send = mocker.patch("core.services.notifications.send_agent_mail")
 
     deliver_notification(opening_notification.pk, now=now)
 
@@ -121,7 +121,7 @@ def test_successful_expiry_mail_keeps_task_expired(active_task, verified_smtp, m
         task=active_task,
         notification_type=Notification.Type.EXPIRY,
     )
-    mocker.patch("core.services.notifications.send_message", return_value="accepted")
+    mocker.patch("core.services.notifications.send_agent_mail", return_value="queued")
 
     deliver_notification(notification.pk)
 

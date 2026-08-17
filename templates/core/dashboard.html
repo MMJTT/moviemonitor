@@ -16,19 +16,19 @@
     </div>
   </section>
 
-  {% if not smtp.is_verified %}
-    <section class="notice notice-warning" aria-labelledby="smtp-needed">
+  {% if not mail.is_verified %}
+    <section class="notice notice-warning" aria-labelledby="mail-needed">
       <div class="notice-copy">
         <p class="eyebrow">Step 01</p>
-        <h2 id="smtp-needed">先配置并测试 SMTP</h2>
-        <p>任务只能在测试邮件成功后创建。邮箱通常需要使用 SMTP 授权码，而不是登录密码。</p>
+        <h2 id="mail-needed">先验证 Agent Mail</h2>
+        <p>任务只能在测试邮件成功后创建。发件邮箱固定为 mijiatong@agent.qq.com，不需要个人邮箱授权码。</p>
       </div>
-      <a class="button button-primary" href="{% url 'core:smtp-edit' %}">配置 SMTP</a>
+      <a class="button button-primary" href="{% url 'core:mail-edit' %}">设置邮件</a>
     </section>
   {% elif not active_tasks and not recent_tasks %}
     <section class="empty-state ticket-surface">
       <div class="empty-index" aria-hidden="true">01</div>
-      <p class="eyebrow">SMTP 已就绪</p>
+      <p class="eyebrow">Agent Mail 已就绪</p>
       <h2>创建监控任务</h2>
       <p>准备好猫眼影院列表链接，然后选择城市和一家目标影院。</p>
       <a class="button button-primary" href="{% url 'core:task-preview' %}">创建监控任务</a>
@@ -39,13 +39,13 @@
     <section class="task-list-section" aria-labelledby="active-tasks-title">
       <header class="section-heading">
         <div><p class="eyebrow">Live queue</p><h2 id="active-tasks-title">活动任务</h2></div>
-        {% if smtp.is_verified %}<a class="button button-primary" href="{% url 'core:task-preview' %}">新建任务</a>{% endif %}
+        {% if mail.is_verified %}<a class="button button-primary" href="{% url 'core:task-preview' %}">新建任务</a>{% endif %}
       </header>
       <div class="task-list">
         {% for task in active_tasks %}{% include "core/_dashboard_task_card.html" %}{% endfor %}
       </div>
     </section>
-  {% elif smtp.is_verified and recent_tasks %}
+  {% elif mail.is_verified and recent_tasks %}
     <section class="notice dashboard-ready">
       <div><p class="eyebrow">Queue clear</p><h2>当前没有活动任务</h2><p>可以继续添加新的电影、日期和影院目标。</p></div>
       <a class="button button-primary" href="{% url 'core:task-preview' %}">创建新的监控任务</a>

@@ -174,9 +174,9 @@ button:focus-visible, .button:focus-visible, a:focus-visible { outline: 3px soli
 .steps-context li span { font-family: var(--font-mono); font-size: 0.7rem; }
 .steps-context li.is-active { color: var(--header-ink); }
 .steps-context li.is-active span { color: #ff745d; }
-.smtp-context dl { margin: 24px 0 0; }
-.smtp-context dl > div { display: flex; justify-content: space-between; gap: 18px; padding-block: 10px; border-bottom: 1px solid rgb(255 250 240 / 13%); }
-.smtp-context dd { color: #ff9582; text-align: right; }
+.mail-context dl { margin: 24px 0 0; }
+.mail-context dl > div { display: flex; justify-content: space-between; gap: 18px; padding-block: 10px; border-bottom: 1px solid rgb(255 250 240 / 13%); }
+.mail-context dd { color: #ff9582; text-align: right; }
 .mail-stamp { display: grid; place-items: center; width: 88px; height: 58px; margin-bottom: 28px; color: #ff9582; border: 2px solid #ff745d; font-family: var(--font-mono); font-size: 0.76rem; letter-spacing: 0.16em; transform: rotate(-4deg); }
 .form-card { padding: clamp(24px, 4vw, 38px); border-radius: var(--radius-surface); }
 .form-card form + form { margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--line); }

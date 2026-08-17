@@ -12,14 +12,14 @@ from core.adapters.base import AdapterError
 from core.adapters.maoyan import MaoyanAdapter
 from core.forms import (
     MAOYAN_CITIES,
+    AgentMailConfigForm,
     AppSettingForm,
-    SMTPConfigForm,
     TaskConfirmForm,
     TaskPreviewForm,
 )
-from core.models import AppSetting, MonitorTask, Notification, SMTPConfig
+from core.models import AgentMailConfig, AppSetting, MonitorTask, Notification
 from core.scheduler import wake_scheduler
-from core.services.smtp import sanitize_smtp_error, test_smtp_config
+from core.services.agent_mail import AgentMailError, test_agent_mail_config
 from core.services.tasks import (
     PreviewCinema,
     TaskCreationError,
@@ -56,10 +56,92 @@ def dashboard(request):
         {
             "active_tasks": active_tasks,
             "recent_tasks": recent_tasks,
-            "smtp": SMTPConfig.get_solo(),
+            "mail": AgentMailConfig.get_solo(),
             "setting": AppSetting.get_solo(),
         },
     )
+
+
+def _mark_agent_mail_verified(config):
+    now = timezone.now()
+    with transaction.atomic():
+        updated = AgentMailConfig.objects.filter(
+            pk=config.pk,
+            recipient_email=config.recipient_email,
+            updated_at=config.updated_at,
+        ).update(
+            is_verified=True,
+            verified_at=now,
+            last_error="",
+            updated_at=now,
+        )
+        if updated != 1:
+            return False
+        Notification.objects.filter(status=Notification.Status.PENDING).update(
+            next_attempt_at=now,
+            updated_at=now,
+        )
+        transaction.on_commit(wake_scheduler)
+    return True
+
+
+def _mark_agent_mail_failed(config, error):
+    now = timezone.now()
+    return (
+        AgentMailConfig.objects.filter(
+            pk=config.pk,
+            recipient_email=config.recipient_email,
+            updated_at=config.updated_at,
+        ).update(
+            is_verified=False,
+            verified_at=None,
+            last_error=error,
+            updated_at=now,
+        )
+        == 1
+    )
+
+
+def _begin_agent_mail_test(config):
+    config.is_verified = False
+    config.verified_at = None
+    config.last_error = ""
+    config.save()
+    return config
+
+
+@require_http_methods(["GET", "POST"])
+def mail_edit(request):
+    config = AgentMailConfig.get_solo()
+    form = AgentMailConfigForm(request.POST or None, instance=config)
+    if request.method == "POST" and form.is_valid():
+        config = _begin_agent_mail_test(form.save(commit=False))
+        try:
+            test_agent_mail_config(config)
+        except AgentMailError as exc:
+            _mark_agent_mail_failed(config, str(exc))
+        else:
+            _mark_agent_mail_verified(config)
+            return redirect("core:mail-edit")
+        config = AgentMailConfig.get_solo()
+        form = AgentMailConfigForm(instance=config)
+    return render(request, "core/mail_form.html", {"form": form, "config": config})
+
+
+@require_POST
+def mail_test(request):
+    config = _begin_agent_mail_test(AgentMailConfig.get_solo())
+    try:
+        test_agent_mail_config(config)
+    except AgentMailError as exc:
+        _mark_agent_mail_failed(config, str(exc))
+    else:
+        _mark_agent_mail_verified(config)
+    return redirect("core:mail-edit")
+
+
+def legacy_smtp_redirect(request):
+    return redirect("core:mail-edit")
 
 
 @require_http_methods(["GET", "POST"])
@@ -90,101 +172,12 @@ def task_detail(request, task_id):
     )
 
 
-def _mark_smtp_verified(config):
-    now = timezone.now()
-    with transaction.atomic():
-        config.is_verified = True
-        config.verified_at = now
-        config.last_error = ""
-        config.save()
-        Notification.objects.filter(status=Notification.Status.PENDING).update(
-            next_attempt_at=now,
-            updated_at=now,
-        )
-        transaction.on_commit(wake_scheduler)
-
-
-def _smtp_persistence_failure(request, config):
-    try:
-        durable_config = SMTPConfig.objects.get(pk=config.pk)
-    except Exception:
-        durable_config = config
-        durable_config.is_verified = False
-        durable_config.verified_at = None
-    form = SMTPConfigForm(instance=durable_config)
-    return render(
-        request,
-        "core/smtp_form.html",
-        {
-            "form": form,
-            "config": durable_config,
-            "persistence_error": "无法安全保存 SMTP 配置，请检查本地密钥和数据库。",
-        },
-    )
-
-
-@require_http_methods(["GET", "POST"])
-def smtp_edit(request):
-    config = SMTPConfig.get_solo()
-    form = SMTPConfigForm(request.POST or None, instance=config)
-    if request.method == "POST" and form.is_valid():
-        try:
-            config = form.save()
-        except Exception:
-            return _smtp_persistence_failure(request, config)
-        try:
-            test_smtp_config(config)
-        except Exception as exc:
-            config.is_verified = False
-            config.verified_at = None
-            config.last_error = sanitize_smtp_error(exc)
-            try:
-                config.save()
-            except Exception:
-                return _smtp_persistence_failure(request, config)
-            return render(request, "core/smtp_form.html", {"form": form, "config": config})
-
-        try:
-            _mark_smtp_verified(config)
-        except Exception:
-            return _smtp_persistence_failure(request, config)
-        return redirect("core:smtp-edit")
-
-    return render(request, "core/smtp_form.html", {"form": form, "config": config})
-
-
-@require_POST
-def smtp_test(request):
-    config = SMTPConfig.get_solo()
-    try:
-        test_smtp_config(config)
-    except Exception as exc:
-        config.is_verified = False
-        config.verified_at = None
-        config.last_error = sanitize_smtp_error(exc)
-        try:
-            config.save()
-        except Exception:
-            return _smtp_persistence_failure(request, config)
-        return render(
-            request,
-            "core/smtp_form.html",
-            {"form": SMTPConfigForm(instance=config), "config": config},
-        )
-
-    try:
-        _mark_smtp_verified(config)
-    except Exception:
-        return _smtp_persistence_failure(request, config)
-    return redirect("core:smtp-edit")
-
-
 @require_http_methods(["GET", "POST"])
 def task_preview(request):
-    if not SMTPConfig.objects.filter(is_verified=True).exists():
+    if not AgentMailConfig.objects.filter(is_verified=True).exists():
         if request.method == "GET":
-            return redirect("core:smtp-edit")
-        return HttpResponseForbidden("请先验证 SMTP 配置。")
+            return redirect("core:mail-edit")
+        return HttpResponseForbidden("请先验证 Agent Mail 配置。")
 
     form = TaskPreviewForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
@@ -226,8 +219,8 @@ def task_preview(request):
 
 @require_POST
 def task_confirm(request):
-    if not SMTPConfig.objects.filter(is_verified=True).exists():
-        return HttpResponseForbidden("请先验证 SMTP 配置。")
+    if not AgentMailConfig.objects.filter(is_verified=True).exists():
+        return HttpResponseForbidden("请先验证 Agent Mail 配置。")
 
     form = TaskConfirmForm(request.POST)
     if form.is_valid():

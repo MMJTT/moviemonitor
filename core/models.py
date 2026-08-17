@@ -32,25 +32,16 @@ class AppSetting(SingletonModel):
         return "应用设置"
 
 
-class SMTPConfig(SingletonModel):
-    class Security(models.TextChoices):
-        SSL = "ssl", "SSL/TLS"
-        STARTTLS = "starttls", "STARTTLS"
-
-    host = models.CharField(max_length=255, blank=True)
-    port = models.PositiveIntegerField(default=465)
-    security = models.CharField(max_length=16, choices=Security.choices, default=Security.SSL)
-    username = models.CharField(max_length=255, blank=True)
-    from_email = models.EmailField(blank=True)
+class AgentMailConfig(SingletonModel):
+    sender_email = models.EmailField(default="mijiatong@agent.qq.com", editable=False)
     recipient_email = models.EmailField(blank=True)
-    encrypted_password = models.TextField(blank=True)
     is_verified = models.BooleanField(default=False)
     verified_at = models.DateTimeField(null=True, blank=True)
     last_error = models.CharField(max_length=200, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return "SMTP 配置"
+        return "Agent Mail 配置"
 
 
 class MonitorTask(models.Model):
@@ -142,7 +133,7 @@ class Notification(models.Model):
     retry_count = models.PositiveSmallIntegerField(default=0)
     next_attempt_at = models.DateTimeField(null=True, blank=True, db_index=True)
     message_id = models.CharField(max_length=255, blank=True)
-    smtp_response = models.CharField(max_length=200, blank=True)
+    transport_response = models.CharField(max_length=200, blank=True)
     last_error = models.CharField(max_length=200, blank=True)
     sent_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

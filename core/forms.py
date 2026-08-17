@@ -1,47 +1,20 @@
 from django import forms
 
-from core.crypto import encrypt_secret
-from core.models import AppSetting, SMTPConfig
+from core.models import AgentMailConfig, AppSetting
 
 MAOYAN_CITIES = {10: "上海"}
 
 
-class SMTPConfigForm(forms.ModelForm):
-    authorization_code = forms.CharField(
-        label="SMTP 授权码",
-        help_text="不是邮箱登录密码；留空会保留已经保存的授权码。",
-        required=False,
-        widget=forms.PasswordInput(render_value=False),
+class AgentMailConfigForm(forms.ModelForm):
+    recipient_email = forms.EmailField(
+        label="收件邮箱",
+        help_text="开票和到期提醒将发送到这个地址。",
+        required=True,
     )
 
     class Meta:
-        model = SMTPConfig
-        fields = ("host", "port", "security", "username", "from_email", "recipient_email")
-        labels = {
-            "host": "SMTP 主机",
-            "port": "端口",
-            "security": "连接安全",
-            "username": "用户名",
-            "from_email": "发件邮箱",
-            "recipient_email": "收件邮箱",
-        }
-
-    def clean_authorization_code(self):
-        value = self.cleaned_data["authorization_code"]
-        if not value and not self.instance.encrypted_password:
-            raise forms.ValidationError("请输入 SMTP 授权码")
-        return value
-
-    def save(self, commit=True):
-        config = super().save(commit=False)
-        secret = self.cleaned_data["authorization_code"]
-        if secret:
-            config.encrypted_password = encrypt_secret(secret)
-            config.is_verified = False
-            config.verified_at = None
-        if commit:
-            config.save()
-        return config
+        model = AgentMailConfig
+        fields = ["recipient_email"]
 
 
 class AppSettingForm(forms.ModelForm):

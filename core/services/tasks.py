@@ -15,7 +15,8 @@ from core.adapters.base import (
     TemporaryPlatformError,
 )
 from core.adapters.maoyan import MaoyanAdapter, normalize_cinema_name
-from core.models import AppSetting, CheckRun, MonitorTask, Notification, SMTPConfig
+from core.models import AgentMailConfig, AppSetting, CheckRun, MonitorTask, Notification
+from core.services.agent_mail import AgentMailError, verify_agent_mail
 
 PREVIEW_SALT = "local-task-preview"
 FAILURE_BACKOFF_SECONDS = (120, 300, 900, 1800, 3600)
@@ -114,8 +115,19 @@ def _payload_from_signed_preview(value: str) -> TaskPreviewPayload:
 
 
 def create_task(signed_preview: str, cinema_id: str, manual_name: str) -> MonitorTask:
-    if not SMTPConfig.objects.filter(is_verified=True).exists():
-        raise TaskCreationError("请先验证 SMTP 配置。")
+    config = AgentMailConfig.get_solo()
+    if not config.is_verified:
+        raise TaskCreationError("请先验证 Agent Mail 配置。")
+    try:
+        verify_agent_mail()
+    except AgentMailError as exc:
+        AgentMailConfig.objects.filter(pk=config.pk).update(
+            is_verified=False,
+            verified_at=None,
+            last_error=str(exc),
+            updated_at=timezone.now(),
+        )
+        raise TaskCreationError("Agent Mail 当前无法验证，请到邮件设置重新授权并测试。") from exc
 
     payload = _payload_from_signed_preview(signed_preview)
     if date.fromisoformat(payload.show_date) < timezone.localdate():

@@ -138,7 +138,9 @@ def test_cancel_detected_task_invalidates_pending_opening_before_dispatch(
     """Leaving pending opening mail eligible after cancellation could notify against user intent."""
     now = timezone.now()
     mocker.patch("core.views.timezone.now", return_value=now)
-    send = mocker.patch("core.services.notifications.send_message", return_value="accepted")
+    send = mocker.patch(
+        "core.services.notifications.send_agent_mail", return_value="queued"
+    )
 
     response = client.post(
         reverse("core:task-cancel", args=[opening_notification.task_id])
@@ -167,12 +169,12 @@ def test_delivery_claim_wins_before_cancel_and_cancel_returns_conflict(
     send_started = threading.Event()
     release_send = threading.Event()
 
-    def blocked_send(config, message):
+    def blocked_send(recipient, subject, body):
         send_started.set()
         assert release_send.wait(timeout=2)
-        return "accepted"
+        return "queued"
 
-    mocker.patch("core.services.notifications.send_message", side_effect=blocked_send)
+    mocker.patch("core.services.notifications.send_agent_mail", side_effect=blocked_send)
     delivery_thread, delivery_errors = start_database_thread(
         "opening-delivery",
         lambda: deliver_notification(opening_notification.pk),
@@ -227,7 +229,9 @@ def test_cancel_wins_competing_delivery_without_database_lock_or_send(
 
     mocker.patch.object(MonitorTask, "save", new=coordinated_task_save)
     mocker.patch.object(Notification, "save", new=coordinated_notification_save)
-    send = mocker.patch("core.services.notifications.send_message", return_value="accepted")
+    send = mocker.patch(
+        "core.services.notifications.send_agent_mail", return_value="queued"
+    )
     cancel_responses = []
     cancel_thread, cancel_errors = start_database_thread(
         "task-cancel",

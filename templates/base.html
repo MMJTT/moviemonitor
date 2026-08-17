@@ -22,7 +22,7 @@
         <nav class="primary-nav" aria-label="主导航">
           <a href="{% url 'core:dashboard' %}"{% if request.resolver_match.url_name == "dashboard" or request.resolver_match.url_name == "task-detail" %} aria-current="page"{% endif %}>仪表盘</a>
           <a href="{% url 'core:task-preview' %}"{% if request.resolver_match.url_name == "task-preview" or request.resolver_match.url_name == "task-confirm" %} aria-current="page"{% endif %}>新建任务</a>
-          <a href="{% url 'core:smtp-edit' %}"{% if request.resolver_match.url_name == "smtp-edit" %} aria-current="page"{% endif %}>SMTP</a>
+          <a href="{% url 'core:mail-edit' %}"{% if request.resolver_match.url_name == "mail-edit" %} aria-current="page"{% endif %}>邮件</a>
           <a href="{% url 'core:settings' %}"{% if request.resolver_match.url_name == "settings" %} aria-current="page"{% endif %}>设置</a>
         </nav>
       </div>
