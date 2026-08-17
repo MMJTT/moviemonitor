@@ -40,6 +40,8 @@ services:
       - type: bind
         source: ${AGENTLY_DATA_DIR:-../data/agently}
         target: /home/ticketwatch
+        bind:
+          create_host_path: false
     depends_on:
       web:
         condition: service_healthy
