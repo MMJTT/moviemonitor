@@ -5,7 +5,6 @@ from core.models import AgentMailConfig
 from core.services.agent_mail import (
     AgentMailAuthError,
     AgentMailConfigError,
-    AgentMailError,
     AgentMailPermanentError,
     AgentMailTemporaryError,
     AgentMailUncertainError,
@@ -79,7 +78,7 @@ class Command(BaseCommand):
         if not options["send_test"]:
             try:
                 verify_agent_mail()
-            except AgentMailError as error:
+            except Exception as error:
                 self._raise_safe_error(error)
             self.stdout.write(SUCCESS_MESSAGE)
             return
@@ -90,7 +89,7 @@ class Command(BaseCommand):
             queued = test_agent_mail_config(config)
             if queued != "queued":
                 raise AgentMailConfigError("agent-mail-message-not-queued")
-        except AgentMailError as error:
+        except Exception as error:
             self._mark_failed(config, error)
             self._raise_safe_error(error)
 

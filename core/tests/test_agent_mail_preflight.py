@@ -31,6 +31,24 @@ def test_preflight_rejects_sender_mismatch_without_cli_details(mocker):
 
 
 @pytest.mark.django_db
+def test_preflight_sanitizes_unexpected_identity_error(mocker):
+    cli_detail = "provider stderr: oauth token=private-token"
+    mocker.patch(
+        "core.management.commands.agent_mail_preflight.verify_agent_mail",
+        side_effect=RuntimeError(cli_detail),
+    )
+    output = StringIO()
+
+    with pytest.raises(CommandError) as caught:
+        call_command("agent_mail_preflight", stdout=output)
+
+    assert str(caught.value) == "Agent Mail preflight failed: agent-mail-preflight-failed"
+    assert cli_detail not in str(caught.value)
+    assert cli_detail not in output.getvalue()
+    assert caught.value.__cause__ is None
+
+
+@pytest.mark.django_db
 def test_preflight_send_test_marks_config_verified_only_after_queued_success(mocker):
     config = AgentMailConfig.get_solo()
     config.is_verified = True
@@ -83,3 +101,29 @@ def test_preflight_send_test_persists_only_mapped_safe_error_code(mocker):
     assert config.last_error == "agent-mail-network-error"
     assert cli_detail not in str(caught.value)
     assert cli_detail not in output.getvalue()
+
+
+@pytest.mark.django_db
+def test_preflight_send_test_sanitizes_unexpected_error_and_marks_failed(mocker):
+    config = AgentMailConfig.get_solo()
+    config.is_verified = True
+    config.verified_at = timezone.now()
+    config.save()
+    cli_detail = "provider stderr: oauth token=private-token"
+    mocker.patch(
+        "core.management.commands.agent_mail_preflight.test_agent_mail_config",
+        side_effect=RuntimeError(cli_detail),
+    )
+    output = StringIO()
+
+    with pytest.raises(CommandError) as caught:
+        call_command("agent_mail_preflight", "--send-test", stdout=output)
+
+    config.refresh_from_db()
+    assert config.is_verified is False
+    assert config.verified_at is None
+    assert config.last_error == "agent-mail-preflight-failed"
+    assert str(caught.value) == "Agent Mail preflight failed: agent-mail-preflight-failed"
+    assert cli_detail not in str(caught.value)
+    assert cli_detail not in output.getvalue()
+    assert caught.value.__cause__ is None
