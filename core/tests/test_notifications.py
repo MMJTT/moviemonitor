@@ -1,11 +1,16 @@
 from datetime import timedelta
 
 import pytest
+from django.urls import reverse
 from django.utils import timezone
 
 from core.models import MonitorTask, Notification
-from core.services.agent_mail import AgentMailTemporaryError
-from core.services.notifications import deliver_notification, dispatch_due_notifications
+from core.services.agent_mail import AgentMailTemporaryError, AgentMailUncertainError
+from core.services.notifications import (
+    deliver_notification,
+    dispatch_due_notifications,
+    mark_uncertain_sending_notifications,
+)
 
 
 @pytest.mark.django_db
@@ -125,3 +130,74 @@ def test_cancelled_task_permanently_stops_pending_opening_mail(
     assert opening_notification.last_error == "task-no-longer-detected"
     assert opening_notification.sent_at is None
     send.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_worker_startup_parks_preexisting_sending_notification(opening_notification):
+    """Leaving crash-interrupted sends claimable could duplicate accepted email."""
+    opening_notification.status = Notification.Status.SENDING
+    opening_notification.next_attempt_at = timezone.now()
+    opening_notification.save(update_fields=["status", "next_attempt_at"])
+
+    assert mark_uncertain_sending_notifications() == 1
+    assert mark_uncertain_sending_notifications() == 0
+
+    opening_notification.refresh_from_db()
+    assert opening_notification.status == Notification.Status.NEEDS_REVIEW
+    assert opening_notification.next_attempt_at is None
+    assert (
+        opening_notification.last_error
+        == "agent-mail-result-unknown-after-restart"
+    )
+
+
+@pytest.mark.django_db
+def test_uncertain_delivery_is_parked_without_automatic_retry(
+    opening_notification, verified_smtp, mocker
+):
+    """Returning an ambiguous live send to PENDING could send it twice."""
+    mocker.patch(
+        "core.services.notifications.send_agent_mail",
+        side_effect=AgentMailUncertainError("agent-mail-result-unknown"),
+    )
+
+    deliver_notification(opening_notification.pk)
+
+    opening_notification.refresh_from_db()
+    assert opening_notification.status == Notification.Status.NEEDS_REVIEW
+    assert opening_notification.next_attempt_at is None
+    assert opening_notification.retry_count == 0
+    assert opening_notification.last_error == "agent-mail-result-unknown"
+
+
+@pytest.mark.django_db
+def test_system_alert_message_contains_only_sanitized_task_context(
+    task_factory, verified_smtp, mocker
+):
+    """Including stored source/provider detail could leak remote content by email."""
+    task = task_factory(
+        status=MonitorTask.Status.ERROR,
+        source_url="https://private.example.test/secret-response",
+        last_error="猫眼页面结构无法验证",
+        next_check_at=None,
+    )
+    alert = Notification.objects.create(
+        task=task,
+        notification_type=Notification.Type.SYSTEM_ALERT,
+    )
+    send = mocker.patch(
+        "core.services.notifications.send_agent_mail", return_value="queued"
+    )
+
+    deliver_notification(alert.pk)
+
+    assert send.call_args.args[1] == "[TicketWatch] 监控任务需要处理"
+    assert send.call_args.args[2].splitlines() == [
+        f"电影：{task.movie_name}",
+        f"日期：{task.show_date.isoformat()}",
+        f"城市：{task.city_name}",
+        f"影院：{task.cinema_name}",
+        "错误类别：猫眼页面结构无法验证",
+        f"任务详情：{reverse('core:task-detail', args=[task.pk])}",
+    ]
+    assert "private.example.test" not in send.call_args.args[2]

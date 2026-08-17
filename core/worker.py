@@ -6,7 +6,11 @@ from django.utils import timezone
 
 from core.services.coordination import notify_worker, wait_for_worker
 from core.services.leases import claim_due_task
-from core.services.notifications import dispatch_due_notifications, expire_due_task
+from core.services.notifications import (
+    dispatch_due_notifications,
+    expire_due_task,
+    mark_uncertain_sending_notifications,
+)
 from core.services.tasks import perform_check
 
 
@@ -33,6 +37,7 @@ class WorkerLoop:
             close_old_connections()
 
     def run_forever(self) -> None:
+        mark_uncertain_sending_notifications()
         while not self._stop_event.is_set():
             result = self.run_once()
             if self._stop_event.is_set():

@@ -11,6 +11,7 @@ from core.adapters.base import (
     PageStructureError,
     ParsedTarget,
     RateLimitedError,
+    TargetValidationError,
     TemporaryPlatformError,
 )
 from core.adapters.maoyan import MaoyanAdapter, normalize_cinema_name
@@ -368,19 +369,128 @@ def test_malformed_bracketed_remote_href_becomes_a_structure_check_failure(
 
 
 @pytest.mark.django_db
-def test_fifth_consecutive_platform_failure_stops_automatic_checks(active_task, mocker):
-    """Continuing to poll after the fifth consecutive platform failure must fail this test."""
+@pytest.mark.parametrize(
+    ("error", "expected_check_status", "expected_category"),
+    [
+        (
+            PageStructureError("untrusted response body"),
+            CheckRun.Status.STRUCTURE_ERROR,
+            "猫眼页面结构无法验证",
+        ),
+        (
+            TargetValidationError("untrusted target detail"),
+            CheckRun.Status.CONFIG_ERROR,
+            "监控目标配置无效",
+        ),
+    ],
+)
+def test_fifth_structure_or_config_failure_creates_one_system_alert(
+    active_task, mocker, error, expected_check_status, expected_category
+):
+    """Missing or duplicating the terminal alert would hide a stopped task."""
     active_task.consecutive_failures = 4
     active_task.save()
     mocker.patch(
         "core.services.tasks.MaoyanAdapter.fetch",
-        side_effect=PageStructureError("untrusted response body"),
+        side_effect=error,
     )
 
-    perform_check(active_task.pk)
+    first = perform_check(active_task.pk)
+    second = perform_check(active_task.pk)
 
     active_task.refresh_from_db()
+    assert first.pk == second.pk
+    assert first.status == expected_check_status
     assert active_task.status == MonitorTask.Status.ERROR
     assert active_task.consecutive_failures == 5
     assert active_task.next_check_at is None
-    assert not Notification.objects.exists()
+    alert = Notification.objects.get(
+        task=active_task, notification_type=Notification.Type.SYSTEM_ALERT
+    )
+    assert alert.status == Notification.Status.PENDING
+    assert active_task.last_error == expected_category
+
+
+@pytest.mark.django_db
+def test_config_error_before_fifth_failure_retries_without_system_alert(
+    active_task, mocker
+):
+    """Stopping on the first deterministic config failure violates the fifth-error threshold."""
+    now = timezone.now()
+    mocker.patch(
+        "core.services.tasks.MaoyanAdapter.fetch",
+        side_effect=TargetValidationError("untrusted target detail"),
+    )
+
+    check = perform_check(active_task.pk, now=now)
+
+    active_task.refresh_from_db()
+    assert check.status == CheckRun.Status.CONFIG_ERROR
+    assert active_task.status == MonitorTask.Status.MONITORING
+    assert active_task.consecutive_failures == 1
+    assert active_task.next_check_at == now + timedelta(seconds=120)
+    assert not active_task.notifications.filter(
+        notification_type=Notification.Type.SYSTEM_ALERT
+    ).exists()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "error",
+    [
+        TemporaryPlatformError("private transient response"),
+        RateLimitedError("private rate-limit response"),
+    ],
+)
+def test_fifth_temporary_or_rate_failure_keeps_retrying_without_system_alert(
+    active_task, mocker, error
+):
+    """Applying the terminal threshold to retryable failures would stop monitoring."""
+    now = timezone.now()
+    active_task.consecutive_failures = 4
+    active_task.save(update_fields=["consecutive_failures"])
+    mocker.patch("core.services.tasks.MaoyanAdapter.fetch", side_effect=error)
+
+    perform_check(active_task.pk, now=now)
+
+    active_task.refresh_from_db()
+    assert active_task.status == MonitorTask.Status.MONITORING
+    assert active_task.consecutive_failures == 5
+    assert active_task.next_check_at == now + timedelta(seconds=3600)
+    assert active_task.claim_token is None
+    assert active_task.claim_expires_at is None
+    assert not active_task.notifications.filter(
+        notification_type=Notification.Type.SYSTEM_ALERT
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_resuming_error_task_does_not_create_second_system_alert(
+    client, active_task, mocker
+):
+    """A second terminal episode must preserve the task's single alert fact."""
+    active_task.consecutive_failures = 4
+    active_task.save(update_fields=["consecutive_failures"])
+    mocker.patch(
+        "core.services.tasks.MaoyanAdapter.fetch",
+        side_effect=PageStructureError("untrusted response body"),
+    )
+    perform_check(active_task.pk)
+    alert = active_task.notifications.get(
+        notification_type=Notification.Type.SYSTEM_ALERT
+    )
+    alert.status = Notification.Status.SENT
+    alert.save(update_fields=["status"])
+
+    response = client.post(reverse("core:task-resume", args=[active_task.pk]))
+    active_task.refresh_from_db()
+    active_task.consecutive_failures = 4
+    active_task.save(update_fields=["consecutive_failures"])
+    perform_check(active_task.pk)
+
+    alert.refresh_from_db()
+    assert response.status_code == 302
+    assert active_task.notifications.filter(
+        notification_type=Notification.Type.SYSTEM_ALERT
+    ).count() == 1
+    assert alert.status == Notification.Status.SENT

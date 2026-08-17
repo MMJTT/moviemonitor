@@ -3,6 +3,7 @@ from datetime import timedelta
 
 from django.db import transaction
 from django.db.models import Q
+from django.urls import reverse
 from django.utils import timezone
 
 from core.models import AgentMailConfig, MonitorTask, Notification
@@ -11,12 +12,14 @@ from core.services.agent_mail import (
     AgentMailConfigError,
     AgentMailPermanentError,
     AgentMailTemporaryError,
+    AgentMailUncertainError,
     send_agent_mail,
 )
 from core.services.tasks import TASK_NO_LONGER_DETECTED, opening_notification_transition
 
 RETRY_MINUTES = (1, 5, 15, 30, 60)
 EXPIRED_BEFORE_DELIVERY = "expired-before-delivery"
+UNCERTAIN_AFTER_RESTART = "agent-mail-result-unknown-after-restart"
 
 EXPIRABLE_TASK_STATUSES = (
     MonitorTask.Status.MONITORING,
@@ -105,7 +108,7 @@ def _build_message(notification, now):
             f"监控链接：{task.source_url}",
             f"购票链接：{task.booking_url}",
         ]
-    else:
+    elif notification.notification_type == Notification.Type.EXPIRY:
         subject = f"[TicketWatch] {task.movie_name} 监控已到期"
         event_time = task.expired_at or now
         lines = [
@@ -116,7 +119,41 @@ def _build_message(notification, now):
             f"到期时间：{_local_timestamp(event_time)}",
             f"监控链接：{task.source_url}",
         ]
+    else:
+        subject = "[TicketWatch] 监控任务需要处理"
+        lines = [
+            f"电影：{task.movie_name}",
+            f"日期：{task.show_date.isoformat()}",
+            f"城市：{task.city_name}",
+            f"影院：{task.cinema_name}",
+            f"错误类别：{task.last_error}",
+            f"任务详情：{reverse('core:task-detail', args=[task.pk])}",
+        ]
     return OutgoingMail(subject=subject, body="\n".join(lines))
+
+
+def _mark_notification_needs_review(notification_id, error):
+    with transaction.atomic():
+        current = Notification.objects.select_for_update().get(pk=notification_id)
+        if current.status != Notification.Status.SENDING:
+            return
+        current.status = Notification.Status.NEEDS_REVIEW
+        current.next_attempt_at = None
+        current.last_error = error
+        current.save(
+            update_fields=["status", "next_attempt_at", "last_error", "updated_at"]
+        )
+
+
+def mark_uncertain_sending_notifications() -> int:
+    now = timezone.now()
+    with transaction.atomic():
+        return Notification.objects.filter(status=Notification.Status.SENDING).update(
+            status=Notification.Status.NEEDS_REVIEW,
+            next_attempt_at=None,
+            last_error=UNCERTAIN_AFTER_RESTART,
+            updated_at=now,
+        )
 
 
 def _park_for_mail_repair(notification_id, error, *, unverify_mail):
@@ -225,6 +262,9 @@ def deliver_notification(notification_id, now=None):
         response = send_agent_mail(
             config.recipient_email, outgoing.subject, outgoing.body
         )
+    except AgentMailUncertainError as exc:
+        _mark_notification_needs_review(notification_id, str(exc))
+        return
     except (AgentMailAuthError, AgentMailConfigError) as exc:
         _park_for_mail_repair(notification_id, str(exc), unverify_mail=True)
         return

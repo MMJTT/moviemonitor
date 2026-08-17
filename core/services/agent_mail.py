@@ -15,6 +15,10 @@ class AgentMailTemporaryError(AgentMailError):
     """A retryable Agent Mail transport failure."""
 
 
+class AgentMailUncertainError(AgentMailError):
+    """The provider may have accepted the message before transport failed."""
+
+
 class AgentMailAuthError(AgentMailError):
     """The local Agent Mail OAuth authorization is unavailable."""
 
@@ -48,7 +52,7 @@ def _run(arguments):
             env=environment,
         )
     except subprocess.TimeoutExpired as exc:
-        raise AgentMailTemporaryError("agent-mail-timeout") from exc
+        raise AgentMailUncertainError("agent-mail-result-unknown") from exc
     except OSError as exc:
         raise AgentMailTemporaryError("agent-mail-network-error") from exc
 

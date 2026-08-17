@@ -8,6 +8,7 @@ from core.services.agent_mail import (
     AgentMailConfigError,
     AgentMailPermanentError,
     AgentMailTemporaryError,
+    AgentMailUncertainError,
     send_agent_mail,
     verify_agent_mail,
 )
@@ -147,3 +148,15 @@ def test_verify_agent_mail_rejects_malformed_success_payloads(mocker, payload):
 
     with pytest.raises(AgentMailConfigError, match="agent-mail-invalid-response"):
         verify_agent_mail()
+
+
+def test_cli_timeout_is_uncertain_not_retryable(mocker):
+    """Treating an ambiguous CLI timeout as retryable could duplicate an email."""
+    mocker.patch("core.services.agent_mail.shutil.which", return_value="agently-cli")
+    mocker.patch(
+        "core.services.agent_mail.subprocess.run",
+        side_effect=subprocess.TimeoutExpired("agently-cli", 30),
+    )
+
+    with pytest.raises(AgentMailUncertainError, match="agent-mail-result-unknown"):
+        send_agent_mail(RECIPIENT, "测试", "正文")

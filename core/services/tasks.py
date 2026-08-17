@@ -23,6 +23,10 @@ from core.services.scheduling import interval_seconds_for
 PREVIEW_SALT = "local-task-preview"
 FAILURE_BACKOFF_SECONDS = (120, 300, 900, 1800, 3600)
 TASK_NO_LONGER_DETECTED = "task-no-longer-detected"
+TERMINAL_CHECK_STATUSES = {
+    CheckRun.Status.STRUCTURE_ERROR,
+    CheckRun.Status.CONFIG_ERROR,
+}
 
 _FAILURE_DETAILS = {
     TemporaryPlatformError: (
@@ -333,7 +337,10 @@ def perform_check(task_id, now=None, claim_token=None):
             current.last_checked_at = now
             current.claim_token = None
             current.claim_expires_at = None
-            if check_status == CheckRun.Status.CONFIG_ERROR or failure_count >= 5:
+            terminal_failure = (
+                check_status in TERMINAL_CHECK_STATUSES and failure_count >= 5
+            )
+            if terminal_failure:
                 current.status = MonitorTask.Status.ERROR
                 current.next_check_at = None
             else:
@@ -356,6 +363,12 @@ def perform_check(task_id, now=None, claim_token=None):
                     "updated_at",
                 ]
             )
+            if terminal_failure:
+                Notification.objects.get_or_create(
+                    task=current,
+                    notification_type=Notification.Type.SYSTEM_ALERT,
+                    defaults={"status": Notification.Status.PENDING},
+                )
             return check
 
         check = CheckRun.objects.create(
