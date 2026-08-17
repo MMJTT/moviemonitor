@@ -6,7 +6,8 @@ from django.core.management.base import CommandError
 from django.utils import timezone
 
 from core.models import MonitorTask, Notification
-from core.scheduler import LocalScheduler, run_due_work, set_process_scheduler, wake_scheduler
+from core.scheduler import LocalScheduler, set_process_scheduler, wake_scheduler
+from core.worker import run_due_work
 
 
 @pytest.fixture(autouse=True)
@@ -24,16 +25,18 @@ def test_due_work_uses_sqlite_due_state_in_safe_order(active_task, pending_notif
     active_task.save(update_fields=["next_check_at"])
     calls = []
     expire = mocker.patch(
-        "core.scheduler.expire_due_task",
+        "core.worker.expire_due_task",
         side_effect=lambda now=None: calls.append(("expire", now)) or False,
     )
     deliver = mocker.patch(
-        "core.scheduler.dispatch_due_notifications",
+        "core.worker.dispatch_due_notifications",
         side_effect=lambda now=None: calls.append(("notifications", now)) or 1,
     )
     check = mocker.patch(
-        "core.scheduler.perform_check",
-        side_effect=lambda task_id, now=None: calls.append(("check", task_id, now)),
+        "core.worker.perform_check",
+        side_effect=lambda task_id, now=None, claim_token=None: calls.append(
+            ("check", task_id, now)
+        ),
     )
 
     outcome = run_due_work(now=now)
@@ -46,7 +49,7 @@ def test_due_work_uses_sqlite_due_state_in_safe_order(active_task, pending_notif
     ]
     expire.assert_called_once_with(now=now)
     deliver.assert_called_once_with(now=now)
-    check.assert_called_once_with(active_task.pk, now=now)
+    check.assert_called_once_with(active_task.pk, now=now, claim_token=mocker.ANY)
 
 
 @pytest.mark.django_db
@@ -54,9 +57,9 @@ def test_due_work_does_not_check_future_or_paused_tasks(task_factory, mocker):
     """Ignoring status or next_check_at would run a check that is not due."""
     now = timezone.now()
     future_task = task_factory(next_check_at=now + timezone.timedelta(minutes=1))
-    check = mocker.patch("core.scheduler.perform_check")
-    mocker.patch("core.scheduler.expire_due_task", return_value=False)
-    mocker.patch("core.scheduler.dispatch_due_notifications", return_value=0)
+    check = mocker.patch("core.worker.perform_check")
+    mocker.patch("core.worker.expire_due_task", return_value=False)
+    mocker.patch("core.worker.dispatch_due_notifications", return_value=0)
 
     assert run_due_work(now=now)["checked"] is False
 
@@ -81,13 +84,13 @@ def test_due_work_checks_the_most_overdue_task_first(active_task, task_factory, 
         cinema_name="另一家影院",
         normalized_cinema_name="另一家影院",
     )
-    check = mocker.patch("core.scheduler.perform_check")
-    mocker.patch("core.scheduler.expire_due_task", return_value=False)
-    mocker.patch("core.scheduler.dispatch_due_notifications", return_value=0)
+    check = mocker.patch("core.worker.perform_check")
+    mocker.patch("core.worker.expire_due_task", return_value=False)
+    mocker.patch("core.worker.dispatch_due_notifications", return_value=0)
 
     run_due_work(now=now)
 
-    check.assert_called_once_with(most_overdue.pk, now=now)
+    check.assert_called_once_with(most_overdue.pk, now=now, claim_token=mocker.ANY)
 
 
 @pytest.mark.django_db
@@ -109,7 +112,7 @@ def test_due_work_sends_one_backlogged_notification_then_checks_due_task(
     send = mocker.patch(
         "core.services.notifications.send_agent_mail", return_value="queued"
     )
-    check = mocker.patch("core.scheduler.perform_check")
+    check = mocker.patch("core.worker.perform_check")
 
     outcome = run_due_work(now=now)
 
@@ -117,7 +120,7 @@ def test_due_work_sends_one_backlogged_notification_then_checks_due_task(
     assert Notification.objects.filter(status=Notification.Status.SENT).count() == 1
     assert Notification.objects.filter(status=Notification.Status.PENDING).count() == 2
     assert send.call_count == 1
-    check.assert_called_once_with(active_task.pk, now=now)
+    check.assert_called_once_with(active_task.pk, now=now, claim_token=mocker.ANY)
 
 
 def test_scheduler_lock_skips_reentrant_tick(mocker):
@@ -177,10 +180,14 @@ def test_scheduler_logs_only_exception_class(caplog, mocker):
     assert "private remote response" not in caplog.text
 
 
-def test_wake_scheduler_targets_only_registered_process_scheduler(mocker):
-    """Losing or retaining the process scheduler reference would miss or misroute wakeups."""
+def test_wake_scheduler_wakes_local_process_before_notifying_worker(mocker):
+    """Skipping either wake path, or reversing them, would delay one deployment mode."""
+    calls = []
     scheduler = LocalScheduler()
-    wake = mocker.patch.object(scheduler, "wake")
+    wake = mocker.patch.object(scheduler, "wake", side_effect=lambda: calls.append("local"))
+    notify = mocker.patch(
+        "core.scheduler.notify_worker", side_effect=lambda: calls.append("redis") or True
+    )
 
     wake_scheduler()
     set_process_scheduler(scheduler)
@@ -189,6 +196,8 @@ def test_wake_scheduler_targets_only_registered_process_scheduler(mocker):
     wake_scheduler()
 
     wake.assert_called_once_with()
+    assert notify.call_count == 3
+    assert calls == ["redis", "local", "redis", "redis"]
 
 
 def test_runlocal_forces_loopback_without_reloader_and_cleans_up(mocker):

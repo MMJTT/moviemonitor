@@ -1,13 +1,10 @@
 import logging
 import threading
 
-from django.db import close_old_connections, transaction
-from django.db.models import Q
-from django.utils import timezone
+from django.db import close_old_connections
 
-from core.models import MonitorTask
-from core.services.notifications import dispatch_due_notifications, expire_due_task
-from core.services.tasks import perform_check
+from core.services.coordination import notify_worker
+from core.worker import run_due_work
 
 logger = logging.getLogger(__name__)
 
@@ -26,25 +23,7 @@ def wake_scheduler():
         scheduler = _scheduler
     if scheduler is not None:
         scheduler.wake()
-
-
-def run_due_work(now=None) -> dict[str, int | bool]:
-    now = now or timezone.now()
-    expired = expire_due_task(now=now)
-    notifications = dispatch_due_notifications(now=now)
-    with transaction.atomic():
-        task_id = (
-            MonitorTask.objects.select_for_update()
-            .filter(status=MonitorTask.Status.MONITORING)
-            .filter(Q(next_check_at__isnull=True) | Q(next_check_at__lte=now))
-            .order_by("next_check_at", "created_at", "pk")
-            .values_list("pk", flat=True)
-            .first()
-        )
-    checked = task_id is not None
-    if task_id is not None:
-        perform_check(task_id, now=now)
-    return {"expired": expired, "notifications": notifications, "checked": checked}
+    notify_worker()
 
 
 class LocalScheduler(threading.Thread):
