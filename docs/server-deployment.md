@@ -54,13 +54,17 @@ sudo install -d -o admin -g admin -m 0700 /opt/ticketwatch/logs
 sudo install -d -o admin -g admin -m 0751 /opt/ticketwatch/migration-data
 ```
 
-检出明确提交。以下 SHA 是当前实现基线；若部署审阅过的更新版本，替换为它的完整 40 位 SHA。
+检出明确提交。以下 SHA 是当前实现基线，已由已发布的 `feature/ticket-monitor` 审阅分支承载；若部署审阅过的更新版本，替换为其已发布审阅 ref 上的完整 40 位 SHA。部署前必须验证 ref 存在且该 SHA 可从 ref 到达；任一步失败即停止。最终验收前，先发布最终审阅 SHA 到远端，再将它写入本段。
 
 ```bash
 REPOSITORY_URL='https://github.com/MMJTT/moviemonitor.git'
+RELEASE_REF='refs/heads/feature/ticket-monitor'
 RELEASE_SHA='49b4549308c056db07a44174983ac86e9d73552b'
-sudo -u admin git clone "$REPOSITORY_URL" /opt/ticketwatch/app
-sudo -u admin git -C /opt/ticketwatch/app fetch --tags origin
+git ls-remote --exit-code "$REPOSITORY_URL" "$RELEASE_REF"
+sudo -u admin git clone --no-checkout "$REPOSITORY_URL" /opt/ticketwatch/app
+sudo -u admin git -C /opt/ticketwatch/app fetch --no-tags origin "$RELEASE_REF"
+sudo -u admin git -C /opt/ticketwatch/app rev-parse --verify "$RELEASE_SHA^{commit}"
+sudo -u admin git -C /opt/ticketwatch/app merge-base --is-ancestor "$RELEASE_SHA" FETCH_HEAD
 sudo -u admin git -C /opt/ticketwatch/app checkout --detach "$RELEASE_SHA"
 test "$(sudo -u admin git -C /opt/ticketwatch/app rev-parse HEAD)" = "$RELEASE_SHA"
 ```
@@ -227,6 +231,7 @@ test -n "$UPGRADE_BACKUP"
 UPGRADE_BACKUP_SHA=$(sha256sum "$UPGRADE_BACKUP" | awk '{print $1}')
 UPGRADE_ID="$(date -u +%Y%m%dT%H%M%SZ)-$PREVIOUS_SHA"
 RECORD="/opt/ticketwatch/data/upgrade-records/$UPGRADE_ID.env"
+test ! -e "$RECORD" && test ! -L "$RECORD"
 RECORD_TMP=$(mktemp /opt/ticketwatch/data/upgrade-records/.record.XXXXXX)
 {
   printf 'PREVIOUS_SHA=%s\nNEW_SHA=%s\nWEB_IMAGE_ID=%s\nWORKER_IMAGE_ID=%s\n' "$PREVIOUS_SHA" "$NEW_SHA" "$WEB_IMAGE_ID" "$WORKER_IMAGE_ID"
@@ -260,17 +265,27 @@ set -Eeuo pipefail
 RECORD='/opt/ticketwatch/data/upgrade-records/REPLACE_WITH_SELECTED_RECORD.env'
 test -f "$RECORD" && test ! -L "$RECORD"
 test "$(stat -c '%U:%G:%a' "$RECORD")" = 'admin:admin:600'
+for key in PREVIOUS_SHA NEW_SHA WEB_IMAGE_ID WORKER_IMAGE_ID WEB_IMAGE_REF WORKER_IMAGE_REF BACKUP_PATH BACKUP_SHA256; do
+  test "$(grep -c "^$key=" "$RECORD")" = 1
+done
+test "$(grep -Ec '^(PREVIOUS_SHA|NEW_SHA|WEB_IMAGE_ID|WORKER_IMAGE_ID|WEB_IMAGE_REF|WORKER_IMAGE_REF|BACKUP_PATH|BACKUP_SHA256)=' "$RECORD")" = 8
 record_value() { sed -n "s/^$1=//p" "$RECORD"; }
 PREVIOUS_SHA=$(record_value PREVIOUS_SHA)
+NEW_SHA=$(record_value NEW_SHA)
 WEB_IMAGE_ID=$(record_value WEB_IMAGE_ID)
 WORKER_IMAGE_ID=$(record_value WORKER_IMAGE_ID)
 WEB_IMAGE_REF=$(record_value WEB_IMAGE_REF)
 WORKER_IMAGE_REF=$(record_value WORKER_IMAGE_REF)
 BACKUP_PATH=$(record_value BACKUP_PATH)
 BACKUP_SHA256=$(record_value BACKUP_SHA256)
-test "$(printf '%s' "$PREVIOUS_SHA" | wc -c)" = 40
+for sha in "$PREVIOUS_SHA" "$NEW_SHA"; do printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{40}$'; done
+for image_id in "$WEB_IMAGE_ID" "$WORKER_IMAGE_ID"; do printf '%s\n' "$image_id" | grep -Eq '^sha256:[0-9a-f]{64}$'; done
+for image_ref in "$WEB_IMAGE_REF" "$WORKER_IMAGE_REF"; do printf '%s\n' "$image_ref" | grep -Eq '^[A-Za-z0-9_./:@-]+$'; done
+printf '%s\n' "$BACKUP_PATH" | grep -Eq '^/opt/ticketwatch/data/backups/ticketwatch-[0-9]{8}T[0-9]{6}Z\.sql\.gz$'
+printf '%s\n' "$BACKUP_SHA256" | grep -Eq '^[0-9a-f]{64}$'
 test "$(sha256sum "$BACKUP_PATH" | awk '{print $1}')" = "$BACKUP_SHA256"
 docker image inspect "$WEB_IMAGE_ID" "$WORKER_IMAGE_ID" >/dev/null
+test "$(git rev-parse HEAD)" = "$NEW_SHA"
 docker compose --env-file /opt/ticketwatch/.env stop worker web
 git checkout --detach "$PREVIOUS_SHA"
 test "$(git rev-parse HEAD)" = "$PREVIOUS_SHA"
@@ -291,20 +306,28 @@ curl --fail http://127.0.0.1:8000/statusz
 cd /opt/ticketwatch/app
 set -Eeuo pipefail
 BACKUP='/opt/ticketwatch/data/backups/ticketwatch-YYYYMMDDTHHMMSSZ.sql.gz'
-INCIDENT_ID='REPLACE_WITH_TICKET_OR_TIMESTAMP'
+INCIDENT_ID="$(date -u +%Y%m%dT%H%M%SZ)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+printf '%s\n' "$INCIDENT_ID" | grep -Eq '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$'
 INCIDENT_DIR="/opt/ticketwatch/data/incidents/$INCIDENT_ID"
+FAILURE_SCENE_COPY="$INCIDENT_DIR/failure-scene.sql.gz"
+FAILURE_SCENE_RECORD="$INCIDENT_DIR/failure-scene-record.txt"
+sudo test ! -e "$INCIDENT_DIR" && sudo test ! -L "$INCIDENT_DIR"
 test -f "$BACKUP"
 ./deploy/verify-backup.sh "$BACKUP"
 ./deploy/backup-postgres.sh
 FAILURE_SCENE_BACKUP=$(find /opt/ticketwatch/data/backups -maxdepth 1 -type f -name 'ticketwatch-*.sql.gz' -printf '%T@ %p\n' | sort -n | tail -n 1 | cut -d' ' -f2-)
 test -n "$FAILURE_SCENE_BACKUP"
 sudo install -d -o admin -g admin -m 0700 "$INCIDENT_DIR"
-sudo install -o admin -g admin -m 0600 "$FAILURE_SCENE_BACKUP" "$INCIDENT_DIR/failure-scene.sql.gz"
-FAILURE_SCENE_COPY="$INCIDENT_DIR/failure-scene.sql.gz"
+sudo test ! -e "$FAILURE_SCENE_COPY" && sudo test ! -L "$FAILURE_SCENE_COPY"
+sudo test ! -e "$FAILURE_SCENE_RECORD" && sudo test ! -L "$FAILURE_SCENE_RECORD"
+sudo cp --no-clobber --preserve=mode "$FAILURE_SCENE_BACKUP" "$FAILURE_SCENE_COPY"
+sudo chown admin:admin "$FAILURE_SCENE_COPY"
+sudo chmod 0600 "$FAILURE_SCENE_COPY"
+cmp -s "$FAILURE_SCENE_BACKUP" "$FAILURE_SCENE_COPY"
 FAILURE_SCENE_SHA=$(sha256sum "$FAILURE_SCENE_COPY" | awk '{print $1}')
-printf 'failure_scene_backup=%s\nsha256=%s\n' "$FAILURE_SCENE_COPY" "$FAILURE_SCENE_SHA" | sudo tee "$INCIDENT_DIR/failure-scene-record.txt" >/dev/null
-sudo chown admin:admin "$INCIDENT_DIR/failure-scene-record.txt"
-sudo chmod 0600 "$INCIDENT_DIR/failure-scene-record.txt"
+printf 'failure_scene_backup=%s\nsha256=%s\n' "$FAILURE_SCENE_COPY" "$FAILURE_SCENE_SHA" | sudo tee "$FAILURE_SCENE_RECORD" >/dev/null
+sudo chown admin:admin "$FAILURE_SCENE_RECORD"
+sudo chmod 0600 "$FAILURE_SCENE_RECORD"
 docker compose --env-file /opt/ticketwatch/.env stop worker web
 gzip -dc -- "$BACKUP" | docker compose --env-file /opt/ticketwatch/.env exec -T postgres sh -ec 'dropdb --if-exists --no-password --username "$POSTGRES_USER" "$POSTGRES_DB"; createdb --no-password --username "$POSTGRES_USER" "$POSTGRES_DB"; pg_restore --exit-on-error --no-owner --no-acl --no-password --username "$POSTGRES_USER" --dbname "$POSTGRES_DB"'
 docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web python manage.py migrate
