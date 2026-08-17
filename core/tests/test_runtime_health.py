@@ -16,6 +16,17 @@ from core.worker import WorkerLoop
 
 DiskUsage = namedtuple("DiskUsage", ["total", "used", "free"])
 pytestmark = pytest.mark.django_db
+STATUS_KEYS = {
+    "status",
+    "database",
+    "redis",
+    "worker",
+    "mail",
+    "tasks",
+    "last_check_at",
+    "backup",
+    "disk",
+}
 
 
 @freeze_time("2026-08-17 10:00:00+00:00")
@@ -70,17 +81,7 @@ def test_collect_runtime_status_reports_safe_database_backed_summary(
 
     status = collect_runtime_status(now=now)
 
-    assert status.keys() == {
-        "status",
-        "database",
-        "redis",
-        "worker",
-        "mail",
-        "tasks",
-        "last_check_at",
-        "backup",
-        "disk",
-    }
+    assert status.keys() == STATUS_KEYS
     assert status["status"] == "ok"
     assert status["database"] == "ok"
     assert status["redis"] == "ok"
@@ -118,16 +119,21 @@ def test_collect_runtime_status_reports_safe_database_backed_summary(
 
 
 @pytest.mark.parametrize(
-    ("heartbeat_age", "expected"),
-    [(timedelta(seconds=30), "ok"), (timedelta(seconds=31), "stale")],
+    ("scan_seconds", "heartbeat_age", "expected"),
+    [
+        (10, timedelta(seconds=30), "ok"),
+        (10, timedelta(seconds=31), "stale"),
+        (20, timedelta(seconds=60), "ok"),
+        (20, timedelta(seconds=61), "stale"),
+    ],
 )
 @freeze_time("2026-08-17 10:00:00+00:00")
 def test_worker_status_uses_bounded_scan_interval_staleness(
-    heartbeat_age, expected, settings, mocker
+    scan_seconds, heartbeat_age, expected, settings, mocker
 ):
     now = timezone.now()
     RuntimeState.objects.create(worker_heartbeat_at=now - heartbeat_age)
-    settings.WORKER_SCAN_SECONDS = 10
+    settings.WORKER_SCAN_SECONDS = scan_seconds
     settings.REDIS_URL = "redis://example.test:6379/4"
     mail = AgentMailConfig.get_solo()
     mail.is_verified = True
@@ -172,6 +178,92 @@ def test_redis_failure_degrades_status_without_erasing_database_counts(
     serialized = json.dumps(status).lower()
     assert "private-password" not in serialized
     assert "private token" not in serialized
+
+
+def test_malformed_redis_url_returns_safe_degraded_status_with_database_counts(
+    settings, task_factory, mocker
+):
+    task_factory()
+    malformed_url = (
+        "redis://private-user:private-password@example.test:not-a-port/4?token=private"
+    )
+    settings.REDIS_URL = malformed_url
+    mocker.patch(
+        "core.services.runtime_health.shutil.disk_usage",
+        return_value=DiskUsage(total=1, used=0, free=1),
+    )
+
+    status = collect_runtime_status(now=timezone.now())
+
+    assert status.keys() == STATUS_KEYS
+    assert status["status"] == "degraded"
+    assert status["database"] == "ok"
+    assert status["redis"] == "error"
+    assert status["tasks"]["monitoring"] == 1
+    serialized = json.dumps(status).lower()
+    assert malformed_url.lower() not in serialized
+    assert "not-a-port" not in serialized
+    assert "private-password" not in serialized
+    assert "token" not in serialized
+
+
+def test_database_failure_returns_controlled_fallback_without_exception_text(
+    settings, task_factory, mocker
+):
+    task_factory()
+    settings.REDIS_URL = ""
+    mocker.patch(
+        "core.services.runtime_health.connection.cursor",
+        side_effect=OperationalError(
+            "postgresql://private-user:private-password@example.test/db?token=private"
+        ),
+    )
+    mocker.patch(
+        "core.services.runtime_health.shutil.disk_usage",
+        return_value=DiskUsage(total=1000, used=400, free=600),
+    )
+
+    status = collect_runtime_status(now=timezone.now())
+
+    assert status.keys() == STATUS_KEYS
+    assert status["status"] == "degraded"
+    assert status["database"] == "error"
+    assert status["tasks"] == {
+        "monitoring": 0,
+        "error": 0,
+        "detected": 0,
+        "pending_notifications": 0,
+    }
+    assert status["worker"]["status"] == "unavailable"
+    assert status["mail"]["status"] == "unavailable"
+    assert status["backup"]["status"] == "unavailable"
+    serialized = json.dumps(status).lower()
+    assert "private-password" not in serialized
+    assert "token" not in serialized
+    assert "postgresql://" not in serialized
+
+
+def test_redis_probe_uses_one_second_connect_and_read_timeouts(settings, mocker):
+    settings.REDIS_URL = "redis://example.test:6379/4"
+    client = mocker.Mock()
+    from_url = mocker.patch(
+        "core.services.runtime_health.redis.Redis.from_url", return_value=client
+    )
+    mocker.patch(
+        "core.services.runtime_health.shutil.disk_usage",
+        return_value=DiskUsage(total=1, used=0, free=1),
+    )
+
+    status = collect_runtime_status(now=timezone.now())
+
+    assert status.keys() == STATUS_KEYS
+    assert status["redis"] == "ok"
+    from_url.assert_called_once_with(
+        settings.REDIS_URL,
+        socket_connect_timeout=1,
+        socket_timeout=1,
+    )
+    client.ping.assert_called_once_with()
 
 
 @freeze_time("2026-08-17 10:00:00+00:00")

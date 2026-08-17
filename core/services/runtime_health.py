@@ -117,7 +117,7 @@ def _redis_status():
             socket_timeout=1,
         )
         client.ping()
-    except RedisError:
+    except (RedisError, ValueError):
         return "error"
     return "ok"
 
