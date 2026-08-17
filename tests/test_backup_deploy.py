@@ -30,7 +30,13 @@ set -eu
 printf '%s\n' "$*" >>"$COMMAND_LOG"
 case " $* " in
   *" pg_dump "*)
-    printf 'partial-or-complete-dump'
+    if [[ -n "${TRUST_BREAK_TRIGGER:-}" ]]; then
+      : >"$TRUST_BREAK_TRIGGER"
+    fi
+    if [[ -n "${PG_DUMP_DELAY:-}" ]]; then
+      sleep "$PG_DUMP_DELAY"
+    fi
+    printf '%s' "${DUMP_PAYLOAD:-partial-or-complete-dump}"
     exit "${PG_DUMP_EXIT:-0}"
     ;;
   *" mark_backup_success "*)
@@ -38,13 +44,19 @@ case " $* " in
     test ! -e "$EXPECTED_OLD"
     exit "${MARK_EXIT:-0}"
     ;;
-  *" createdb "*) exit 0 ;;
+  *" createdb "*)
+    if [[ -n "${SWAP_BACKUP_PATH:-}" ]]; then
+      printf 'replacement-after-open' >"$SWAP_BACKUP_PATH.replacement"
+      mv "$SWAP_BACKUP_PATH.replacement" "$SWAP_BACKUP_PATH"
+    fi
+    exit 0
+    ;;
   *" pg_restore "*)
     cat >"$RESTORED_PAYLOAD"
     exit "${RESTORE_EXIT:-0}"
     ;;
   *" psql "*) printf ' 1\n 2\n 3\n 4\n 5\n 6\n' ;;
-  *" dropdb "*) exit 0 ;;
+  *" dropdb "*) exit "${DROPDB_EXIT:-0}" ;;
   *) exit 97 ;;
 esac
 """,
@@ -55,7 +67,9 @@ esac
 set -eu
 case "${1:-}" in
   -c) cat ;;
-  -dc) cat "$2" ;;
+  -dc)
+    if [[ $# -eq 1 ]]; then cat; else cat "$2"; fi
+    ;;
   *) exit 98 ;;
 esac
 """,
@@ -70,6 +84,61 @@ case "${2:-}" in
 esac
 """,
     )
+    _write_executable(
+        fake_bin / "stat",
+        """#!/usr/bin/env bash
+set -eu
+format=$2
+path=
+for arg in "$@"; do path=$arg; done
+owner=admin
+mode=700
+case "$path" in
+  *.env|*.lock) mode=600 ;;
+esac
+if [[ -n "${UNTRUSTED_PATH:-}" && "$path" == "$UNTRUSTED_PATH" ]]; then
+  if [[ -z "${TRUST_BREAK_TRIGGER:-}" || -e "$TRUST_BREAK_TRIGGER" ]]; then
+    owner=${UNTRUSTED_OWNER:-$owner}
+    mode=${UNTRUSTED_MODE:-$mode}
+  fi
+fi
+case "$format" in
+  %U) printf '%s\n' "$owner" ;;
+  %a) printf '%s\n' "$mode" ;;
+  *) exit 96 ;;
+esac
+""",
+    )
+    _write_executable(
+        fake_bin / "realpath",
+        """#!/usr/bin/env python3
+import fcntl
+import os
+import sys
+
+path = sys.argv[-1]
+if path.startswith("/dev/fd/"):
+    if override := os.environ.get("FD_REAL_OVERRIDE"):
+        print(override)
+    else:
+        fd = int(path.rsplit("/", 1)[-1])
+        resolved = fcntl.fcntl(fd, 50, bytes(1024))
+        if isinstance(resolved, str):
+            resolved = resolved.encode()
+        print(resolved.rstrip(b"\\0").decode())
+else:
+    print(os.path.realpath(path))
+""",
+    )
+    _write_executable(
+        fake_bin / "flock",
+        """#!/usr/bin/env python3
+import fcntl
+import sys
+
+fcntl.flock(int(sys.argv[-1]), fcntl.LOCK_EX)
+""",
+    )
     return fake_bin, command_log
 
 
@@ -77,7 +146,8 @@ def _sandbox_script(script_name: str, tmp_path: Path) -> tuple[Path, Path]:
     source = DEPLOY_DIR / script_name
     sandbox_root = tmp_path / "opt" / "ticketwatch"
     sandbox_root.mkdir(parents=True)
-    rendered = source.read_text().replace("/opt/ticketwatch", str(sandbox_root))
+    rendered = source.read_text().replace("/proc/$$/fd", "/dev/fd")
+    rendered = rendered.replace("/opt", str(tmp_path / "opt"))
     script = tmp_path / script_name
     _write_executable(script, rendered)
     return script, sandbox_root
@@ -100,6 +170,7 @@ def _prepare_install_root(root: Path) -> None:
         "POSTGRES_USER=ticketwatch\n"
         "POSTGRES_PASSWORD=do-not-print-this-secret\n"
     )
+    (root / ".env").chmod(0o600)
 
 
 def _run(script: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
@@ -110,6 +181,17 @@ def _run(script: Path, env: dict[str, str], *args: str) -> subprocess.CompletedP
         capture_output=True,
         text=True,
         check=False,
+    )
+
+
+def _popen(script: Path, env: dict[str, str], *args: str) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        ["bash", str(script), *args],
+        cwd=script.parent,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
     )
 
 
@@ -144,12 +226,12 @@ def test_backup_publishes_atomically_then_rotates_and_records_success(tmp_path):
     assert not old_backup.exists()
     assert unrelated.exists()
     assert nested.exists()
-    assert list(backup_dir.glob(".ticketwatch-backup.*")) == []
+    assert list(backup_dir.glob(".ticketwatch-backup.??????")) == []
     commands = command_log.read_text().splitlines()
     assert len(commands) == 2
     assert commands[0].endswith(
         "exec -T postgres pg_dump --format=custom --no-owner --no-acl "
-        "--username ticketwatch ticketwatch"
+        "--no-password --username ticketwatch ticketwatch"
     )
     assert commands[1].endswith(
         "exec -T web python manage.py mark_backup_success "
@@ -181,7 +263,7 @@ def test_failed_dump_removes_only_temp_and_does_not_rotate(tmp_path):
     assert result.returncode == 17
     assert not final_path.exists()
     assert old_backup.read_bytes() == b"old"
-    assert list(backup_dir.glob(".ticketwatch-backup.*")) == []
+    assert list(backup_dir.glob(".ticketwatch-backup.??????")) == []
     assert len(command_log.read_text().splitlines()) == 1
     assert "do-not-print-this-secret" not in result.stdout + result.stderr
 
@@ -207,7 +289,174 @@ def test_failed_status_record_keeps_completed_backup(tmp_path):
 
     assert result.returncode == 23
     assert final_path.read_bytes() == b"partial-or-complete-dump"
-    assert list(backup_dir.glob(".ticketwatch-backup.*")) == []
+    assert list(backup_dir.glob(".ticketwatch-backup.??????")) == []
+
+
+@pytest.mark.parametrize("script_name", ["backup-postgres.sh", "verify-backup.sh"])
+@pytest.mark.parametrize(
+    "env_text",
+    [
+        "POSTGRES_USER=ticketwatch\n",
+        "POSTGRES_USER=ticketwatch\nPOSTGRES_USER=other\nPOSTGRES_DB=ticketwatch\n",
+        'POSTGRES_USER="ticketwatch"\nPOSTGRES_DB=ticketwatch\n',
+        "POSTGRES_USER=ticket-watch\nPOSTGRES_DB=ticketwatch\n",
+    ],
+)
+def test_scripts_reject_missing_duplicate_quoted_or_invalid_identifiers(
+    script_name, env_text, tmp_path
+):
+    script, root = _sandbox_script(script_name, tmp_path)
+    _prepare_install_root(root)
+    (root / ".env").write_text(env_text)
+    fake_bin, command_log = _fake_commands(tmp_path)
+    env = _base_env(fake_bin, command_log)
+    args: tuple[str, ...] = ()
+    if script_name == "verify-backup.sh":
+        backup = root / "data" / "backups" / "ticketwatch-20260817T032000Z.sql.gz"
+        backup.write_bytes(b"dump")
+        args = (str(backup),)
+
+    result = _run(script, env, *args)
+
+    assert result.returncode != 0
+    assert not command_log.exists()
+
+
+@pytest.mark.parametrize("script_name", ["backup-postgres.sh", "verify-backup.sh"])
+def test_env_command_substitution_is_rejected_without_execution(script_name, tmp_path):
+    script, root = _sandbox_script(script_name, tmp_path)
+    _prepare_install_root(root)
+    sentinel = tmp_path / "must-not-exist"
+    (root / ".env").write_text(
+        f"POSTGRES_USER=$(touch {sentinel})\nPOSTGRES_DB=ticketwatch\n"
+    )
+    fake_bin, command_log = _fake_commands(tmp_path)
+    env = _base_env(fake_bin, command_log)
+    args: tuple[str, ...] = ()
+    if script_name == "verify-backup.sh":
+        backup = root / "data" / "backups" / "ticketwatch-20260817T032000Z.sql.gz"
+        backup.write_bytes(b"dump")
+        args = (str(backup),)
+
+    result = _run(script, env, *args)
+
+    assert result.returncode != 0
+    assert not sentinel.exists()
+    assert not command_log.exists()
+
+
+@pytest.mark.parametrize("script_name", ["backup-postgres.sh", "verify-backup.sh"])
+def test_scripts_reject_symlinked_env_file(script_name, tmp_path):
+    script, root = _sandbox_script(script_name, tmp_path)
+    _prepare_install_root(root)
+    env_file = root / ".env"
+    real_env = tmp_path / "real.env"
+    env_file.replace(real_env)
+    env_file.symlink_to(real_env)
+    fake_bin, command_log = _fake_commands(tmp_path)
+    env = _base_env(fake_bin, command_log)
+    args: tuple[str, ...] = ()
+    if script_name == "verify-backup.sh":
+        backup = root / "data" / "backups" / "ticketwatch-20260817T032000Z.sql.gz"
+        backup.write_bytes(b"dump")
+        args = (str(backup),)
+
+    result = _run(script, env, *args)
+
+    assert result.returncode != 0
+    assert not command_log.exists()
+
+
+@pytest.mark.parametrize("script_name", ["backup-postgres.sh", "verify-backup.sh"])
+@pytest.mark.parametrize("trusted_target", ["env-file", "backup-directory"])
+@pytest.mark.parametrize(
+    ("metadata_env", "unsafe_value"),
+    [("UNTRUSTED_OWNER", "nobody"), ("UNTRUSTED_MODE", "722")],
+)
+def test_scripts_reject_untrusted_owner_or_writable_metadata(
+    script_name, trusted_target, metadata_env, unsafe_value, tmp_path
+):
+    script, root = _sandbox_script(script_name, tmp_path)
+    _prepare_install_root(root)
+    backup_dir = root / "data" / "backups"
+    fake_bin, command_log = _fake_commands(tmp_path)
+    env = {
+        **_base_env(fake_bin, command_log),
+        "UNTRUSTED_PATH": str(root / ".env" if trusted_target == "env-file" else backup_dir),
+        metadata_env: unsafe_value,
+    }
+    args: tuple[str, ...] = ()
+    if script_name == "verify-backup.sh":
+        backup = backup_dir / "ticketwatch-20260817T032000Z.sql.gz"
+        backup.write_bytes(b"dump")
+        args = (str(backup),)
+
+    result = _run(script, env, *args)
+
+    assert result.returncode != 0
+    assert not command_log.exists()
+
+
+def test_backup_revalidates_trusted_directory_immediately_before_publish(tmp_path):
+    script, root = _sandbox_script("backup-postgres.sh", tmp_path)
+    _prepare_install_root(root)
+    backup_dir = root / "data" / "backups"
+    fake_bin, command_log = _fake_commands(tmp_path)
+    trigger = tmp_path / "trust-broken"
+    final_path = backup_dir / "ticketwatch-20260817T032000Z.sql.gz"
+    env = {
+        **_base_env(fake_bin, command_log),
+        "UNTRUSTED_PATH": str(backup_dir),
+        "UNTRUSTED_MODE": "722",
+        "TRUST_BREAK_TRIGGER": str(trigger),
+        "EXPECTED_FINAL": str(final_path),
+        "EXPECTED_OLD": str(backup_dir / "old.sql.gz"),
+    }
+
+    result = _run(script, env)
+
+    assert result.returncode != 0
+    assert trigger.exists()
+    assert not final_path.exists()
+    assert list(backup_dir.glob(".ticketwatch-backup.??????")) == []
+    assert len(command_log.read_text().splitlines()) == 1
+
+
+def test_concurrent_same_second_backup_never_replaces_first_publication(tmp_path):
+    script, root = _sandbox_script("backup-postgres.sh", tmp_path)
+    _prepare_install_root(root)
+    backup_dir = root / "data" / "backups"
+    old_backup = backup_dir / "ticketwatch-20260801T032000Z.sql.gz"
+    old_backup.write_bytes(b"old")
+    old_time = time.time() - 9 * 24 * 60 * 60
+    os.utime(old_backup, (old_time, old_time))
+    fake_bin, command_log = _fake_commands(tmp_path)
+    final_path = backup_dir / "ticketwatch-20260817T032000Z.sql.gz"
+    common_env = {
+        **_base_env(fake_bin, command_log),
+        "EXPECTED_FINAL": str(final_path),
+        "EXPECTED_OLD": str(old_backup),
+    }
+    first = _popen(
+        script,
+        {**common_env, "DUMP_PAYLOAD": "first-publication", "PG_DUMP_DELAY": "0.5"},
+    )
+    deadline = time.monotonic() + 3
+    while not command_log.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert command_log.exists()
+    second = _popen(script, {**common_env, "DUMP_PAYLOAD": "second-publication"})
+
+    first_stdout, first_stderr = first.communicate(timeout=5)
+    second_stdout, second_stderr = second.communicate(timeout=5)
+
+    assert first.returncode == 0, first_stdout + first_stderr
+    assert second.returncode != 0, second_stdout + second_stderr
+    assert final_path.read_bytes() == b"first-publication"
+    commands = command_log.read_text().splitlines()
+    assert len(commands) == 2
+    assert " pg_dump " in f" {commands[0]} "
+    assert " mark_backup_success " in f" {commands[1]} "
 
 
 @pytest.mark.parametrize(
@@ -269,6 +518,7 @@ def test_restore_uses_fresh_isolated_database_and_always_drops_it(tmp_path):
     assert second.returncode == 0, second.stderr
     commands = command_log.read_text().splitlines()
     assert len(commands) == 8
+    assert all(" --no-password " in f" {command} " for command in commands)
     created_names: list[str] = []
     for offset in (0, 4):
         created = shlex.split(commands[offset])[-1]
@@ -317,6 +567,72 @@ def test_restore_failure_drops_only_the_database_created_by_that_run(tmp_path):
     assert " dropdb " in f" {commands[2]} "
     assert shlex.split(commands[2])[-1] == created
     assert created != "ticketwatch"
+
+
+def test_restore_reads_open_descriptor_when_approved_path_is_replaced(tmp_path):
+    script, root = _sandbox_script("verify-backup.sh", tmp_path)
+    _prepare_install_root(root)
+    backup = root / "data" / "backups" / "ticketwatch-20260817T032000Z.sql.gz"
+    backup.write_bytes(b"approved-before-open")
+    fake_bin, command_log = _fake_commands(tmp_path)
+    env = {**_base_env(fake_bin, command_log), "SWAP_BACKUP_PATH": str(backup)}
+
+    result = _run(script, env, str(backup))
+
+    assert result.returncode == 0, result.stderr
+    assert backup.read_bytes() == b"replacement-after-open"
+    assert (tmp_path / "restored.dump").read_bytes() == b"approved-before-open"
+
+
+def test_restore_rejects_descriptor_that_does_not_resolve_to_approved_file(tmp_path):
+    script, root = _sandbox_script("verify-backup.sh", tmp_path)
+    _prepare_install_root(root)
+    backup = root / "data" / "backups" / "ticketwatch-20260817T032000Z.sql.gz"
+    backup.write_bytes(b"dump")
+    fake_bin, command_log = _fake_commands(tmp_path)
+    env = {
+        **_base_env(fake_bin, command_log),
+        "FD_REAL_OVERRIDE": str(tmp_path / "different.sql.gz"),
+    }
+
+    result = _run(script, env, str(backup))
+
+    assert result.returncode != 0
+    assert not command_log.exists()
+
+
+def test_successful_restore_returns_failure_when_dropdb_cleanup_fails(tmp_path):
+    script, root = _sandbox_script("verify-backup.sh", tmp_path)
+    _prepare_install_root(root)
+    backup = root / "data" / "backups" / "ticketwatch-20260817T032000Z.sql.gz"
+    backup.write_bytes(b"dump")
+    fake_bin, command_log = _fake_commands(tmp_path)
+    env = {**_base_env(fake_bin, command_log), "DROPDB_EXIT": "47"}
+
+    result = _run(script, env, str(backup))
+
+    assert result.returncode != 0
+    commands = command_log.read_text().splitlines()
+    assert len(commands) == 4
+    assert " dropdb " in f" {commands[-1]} "
+
+
+def test_failed_restore_preserves_original_status_when_dropdb_also_fails(tmp_path):
+    script, root = _sandbox_script("verify-backup.sh", tmp_path)
+    _prepare_install_root(root)
+    backup = root / "data" / "backups" / "ticketwatch-20260817T032000Z.sql.gz"
+    backup.write_bytes(b"dump")
+    fake_bin, command_log = _fake_commands(tmp_path)
+    env = {
+        **_base_env(fake_bin, command_log),
+        "RESTORE_EXIT": "31",
+        "DROPDB_EXIT": "47",
+    }
+
+    result = _run(script, env, str(backup))
+
+    assert result.returncode == 31
+    assert " dropdb " in f" {command_log.read_text().splitlines()[-1]} "
 
 
 def test_scripts_pin_install_paths_and_pass_bash_syntax_check():
