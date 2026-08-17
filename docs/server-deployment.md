@@ -321,8 +321,8 @@ test -f "$BACKUP"
 ./deploy/backup-postgres.sh
 FAILURE_SCENE_BACKUP=$(find /opt/ticketwatch/data/backups -maxdepth 1 -type f -name 'ticketwatch-*.sql.gz' -printf '%T@ %p\n' | sort -n | tail -n 1 | cut -d' ' -f2-)
 test -n "$FAILURE_SCENE_BACKUP"
-COPY_TMP=$(mktemp "$INCIDENT_DIR/.failure-scene.XXXXXX")
-RECORD_TMP=$(mktemp "$INCIDENT_DIR/.failure-scene-record.XXXXXX")
+COPY_TMP=
+RECORD_TMP=
 cleanup_incident_temps() {
   local status=$?
   trap - EXIT
@@ -334,6 +334,8 @@ cleanup_incident_temps() {
   exit "$status"
 }
 trap cleanup_incident_temps EXIT
+COPY_TMP=$(mktemp "$INCIDENT_DIR/.failure-scene.XXXXXX")
+RECORD_TMP=$(mktemp "$INCIDENT_DIR/.failure-scene-record.XXXXXX")
 cp --preserve=mode "$FAILURE_SCENE_BACKUP" "$COPY_TMP"
 chown admin:admin "$COPY_TMP"
 chmod 0600 "$COPY_TMP"

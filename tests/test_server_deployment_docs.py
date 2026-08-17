@@ -67,6 +67,13 @@ def test_incident_snapshot_uses_atomic_no_replace_publication():
     assert "ln --no-target-directory -- \"$COPY_TMP\" \"$FAILURE_SCENE_COPY\"" in DOCUMENT
     assert "ln --no-target-directory -- \"$RECORD_TMP\" \"$FAILURE_SCENE_RECORD\"" in DOCUMENT
     assert "cleanup_incident_temps" in DOCUMENT
+    incident = DOCUMENT[DOCUMENT.index("INCIDENT_ID=") :]
+    assert incident.index("COPY_TMP=\nRECORD_TMP=\ncleanup_incident_temps") < incident.index(
+        'COPY_TMP=$(mktemp "$INCIDENT_DIR/.failure-scene.XXXXXX")'
+    )
+    assert incident.index("trap cleanup_incident_temps EXIT") < incident.index(
+        'COPY_TMP=$(mktemp "$INCIDENT_DIR/.failure-scene.XXXXXX")'
+    )
 
 
 def test_weekly_mac_copy_checks_source_and_destination_hashes():
