@@ -16,6 +16,24 @@ def test_poll_interval_cannot_be_below_sixty_seconds():
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("urgent_window_hours", 0),
+        ("near_window_days", 0),
+        ("urgent_interval_seconds", 59),
+        ("near_interval_seconds", 59),
+        ("far_interval_seconds", 59),
+    ],
+)
+def test_adaptive_schedule_values_respect_safety_floors(field, value):
+    setting = AppSetting(**{field: value})
+
+    with pytest.raises(ValidationError):
+        setting.full_clean()
+
+
+@pytest.mark.django_db
 def test_app_settings_singleton_returns_the_same_record():
     first = AppSetting.get_solo()
     second = AppSetting.get_solo()
@@ -31,6 +49,24 @@ def test_agent_mail_config_singleton_returns_the_same_record():
 
     assert first.pk == second.pk == 1
     assert AgentMailConfig.objects.count() == 1
+
+
+@pytest.mark.django_db
+def test_agent_mail_recipient_is_fixed_for_server_delivery():
+    config = AgentMailConfig.get_solo()
+
+    assert config.recipient_email == "850634546@qq.com"
+    assert config._meta.get_field("recipient_email").editable is False
+
+
+@pytest.mark.django_db
+def test_runtime_fields_and_notification_choices_are_available():
+    task = MonitorTask()
+
+    assert task.claim_token is None
+    assert task.claim_expires_at is None
+    assert Notification.Type.SYSTEM_ALERT == "SYSTEM_ALERT"
+    assert Notification.Status.NEEDS_REVIEW == "NEEDS_REVIEW"
 
 
 @pytest.mark.django_db(transaction=True)

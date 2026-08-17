@@ -202,26 +202,42 @@ def test_dashboard_shows_terminal_outcome_and_new_task_action(
 
 
 @pytest.mark.django_db
-def test_poll_interval_form_rejects_fifty_nine(client):
+def test_adaptive_interval_form_rejects_subminute_values(client):
     """Accepting a sub-minute interval would violate the platform safety floor."""
     response = client.post(
         reverse("core:settings"),
-        {"poll_interval_seconds": 59},
+        {
+            "urgent_window_hours": 72,
+            "near_window_days": 10,
+            "urgent_interval_seconds": 59,
+            "near_interval_seconds": 300,
+            "far_interval_seconds": 900,
+        },
     )
 
     assert response.status_code == 200
-    assert "轮询间隔不能低于 60 秒" in response.content.decode()
-    assert AppSetting.get_solo().poll_interval_seconds == 60
+    assert "60" in response.content.decode()
+    assert AppSetting.get_solo().urgent_interval_seconds == 60
 
 
 @pytest.mark.django_db
-def test_saving_poll_interval_reschedules_monitoring_task_and_wakes_scheduler(
-    client, active_task, mocker, django_capture_on_commit_callbacks
+def test_saving_adaptive_intervals_reschedules_each_monitoring_tier_and_wakes_scheduler(
+    client, active_task, task_factory, mocker, django_capture_on_commit_callbacks
 ):
-    """Keeping the old due time would delay application of a newly saved interval."""
+    """Saving must assign due times from each task's date band."""
     now = timezone.now()
     active_task.next_check_at = now - timedelta(minutes=1)
     active_task.save(update_fields=["next_check_at"])
+    near_task = task_factory(
+        movie_id="near-task",
+        show_date=(now + timedelta(days=5)).date(),
+        query_key="maoyan:10:near-task",
+    )
+    far_task = task_factory(
+        movie_id="far-task",
+        show_date=(now + timedelta(days=15)).date(),
+        query_key="maoyan:10:far-task",
+    )
     scheduler = RecordingScheduler()
     set_process_scheduler(scheduler)
     mocker.patch("core.views.timezone.now", return_value=now)
@@ -229,15 +245,44 @@ def test_saving_poll_interval_reschedules_monitoring_task_and_wakes_scheduler(
     with django_capture_on_commit_callbacks(execute=True):
         response = client.post(
             reverse("core:settings"),
-            {"poll_interval_seconds": 180},
+            {
+                "urgent_window_hours": 72,
+                "near_window_days": 10,
+                "urgent_interval_seconds": 60,
+                "near_interval_seconds": 300,
+                "far_interval_seconds": 900,
+            },
         )
 
     active_task.refresh_from_db()
+    near_task.refresh_from_db()
+    far_task.refresh_from_db()
     assert response.status_code == 302
     assert response.url == reverse("core:settings")
-    assert AppSetting.get_solo().poll_interval_seconds == 180
-    assert active_task.next_check_at == now + timedelta(seconds=180)
+    setting = AppSetting.get_solo()
+    assert setting.urgent_window_hours == 72
+    assert setting.near_window_days == 10
+    assert active_task.next_check_at == now + timedelta(seconds=60)
+    assert near_task.next_check_at == now + timedelta(seconds=300)
+    assert far_task.next_check_at == now + timedelta(seconds=900)
     assert scheduler.wake_count == 1
+
+
+@pytest.mark.django_db
+def test_adaptive_interval_form_rejects_overlapping_date_bands(client):
+    response = client.post(
+        reverse("core:settings"),
+        {
+            "urgent_window_hours": 72,
+            "near_window_days": 3,
+            "urgent_interval_seconds": 60,
+            "near_interval_seconds": 300,
+            "far_interval_seconds": 900,
+        },
+    )
+
+    assert response.status_code == 200
+    assert "临近区间必须大于紧急区间。" in response.content.decode()
 
 
 @pytest.mark.django_db
@@ -252,7 +297,13 @@ def test_settings_saved_during_successful_check_keeps_later_due_time(
     def save_settings_during_fetch(target):
         response = client.post(
             reverse("core:settings"),
-            {"poll_interval_seconds": 300},
+            {
+                "urgent_window_hours": 48,
+                "near_window_days": 7,
+                "urgent_interval_seconds": 300,
+                "near_interval_seconds": 300,
+                "far_interval_seconds": 900,
+            },
         )
         assert response.status_code == 302
         return closed_result_for(active_task)
@@ -280,7 +331,13 @@ def test_settings_saved_during_failed_check_keeps_later_due_time_and_backoff(
     def save_settings_during_fetch(target):
         response = client.post(
             reverse("core:settings"),
-            {"poll_interval_seconds": 60},
+            {
+                "urgent_window_hours": 48,
+                "near_window_days": 7,
+                "urgent_interval_seconds": 60,
+                "near_interval_seconds": 300,
+                "far_interval_seconds": 900,
+            },
         )
         assert response.status_code == 302
         raise TemporaryPlatformError("fixture network failure")
@@ -446,8 +503,7 @@ def test_mocked_local_flow_sends_one_opening_mail_and_completes(
     assert "Agent Mail CLI" in mail_page
 
     mail_response = client.post(
-        reverse("core:mail-edit"),
-        {"recipient_email": "ticketwatch-test@qq.com"},
+        reverse("core:mail-test"),
         follow=True,
     )
 

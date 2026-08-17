@@ -1,34 +1,42 @@
 from django import forms
 
-from core.models import AgentMailConfig, AppSetting
+from core.models import AppSetting
 
 MAOYAN_CITIES = {10: "上海"}
-
-
-class AgentMailConfigForm(forms.ModelForm):
-    recipient_email = forms.EmailField(
-        label="收件邮箱",
-        help_text="开票和到期提醒将发送到这个地址。",
-        required=True,
-    )
-
-    class Meta:
-        model = AgentMailConfig
-        fields = ["recipient_email"]
 
 
 class AppSettingForm(forms.ModelForm):
     class Meta:
         model = AppSetting
-        fields = ("poll_interval_seconds",)
-        labels = {"poll_interval_seconds": "轮询间隔（秒）"}
-        help_texts = {"poll_interval_seconds": "最低 60 秒，保存后立即应用。"}
+        fields = (
+            "urgent_window_hours",
+            "near_window_days",
+            "urgent_interval_seconds",
+            "near_interval_seconds",
+            "far_interval_seconds",
+        )
+        labels = {
+            "urgent_window_hours": "紧急区间（小时）",
+            "near_window_days": "临近区间（天）",
+            "urgent_interval_seconds": "紧急检查间隔（秒）",
+            "near_interval_seconds": "临近检查间隔（秒）",
+            "far_interval_seconds": "远期检查间隔（秒）",
+        }
+        help_texts = {
+            "urgent_window_hours": "目标日剩余时间不超过此值时使用紧急间隔。",
+            "near_window_days": "超过紧急区间且不超过此值时使用临近间隔。",
+            "urgent_interval_seconds": "最低 60 秒。",
+            "near_interval_seconds": "最低 60 秒。",
+            "far_interval_seconds": "最低 60 秒。",
+        }
 
-    def clean_poll_interval_seconds(self):
-        value = self.cleaned_data["poll_interval_seconds"]
-        if value < 60:
-            raise forms.ValidationError("轮询间隔不能低于 60 秒")
-        return value
+    def clean(self):
+        cleaned = super().clean()
+        urgent_hours = cleaned.get("urgent_window_hours")
+        near_days = cleaned.get("near_window_days")
+        if urgent_hours is not None and near_days is not None and near_days * 24 <= urgent_hours:
+            raise forms.ValidationError("临近区间必须大于紧急区间。")
+        return cleaned
 
 
 class TaskPreviewForm(forms.Form):

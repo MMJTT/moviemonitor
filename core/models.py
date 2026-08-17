@@ -26,6 +26,21 @@ class AppSetting(SingletonModel):
     poll_interval_seconds = models.PositiveIntegerField(
         default=60, validators=[MinValueValidator(60)]
     )
+    urgent_window_hours = models.PositiveIntegerField(
+        default=48, validators=[MinValueValidator(1)]
+    )
+    near_window_days = models.PositiveIntegerField(
+        default=7, validators=[MinValueValidator(1)]
+    )
+    urgent_interval_seconds = models.PositiveIntegerField(
+        default=60, validators=[MinValueValidator(60)]
+    )
+    near_interval_seconds = models.PositiveIntegerField(
+        default=300, validators=[MinValueValidator(60)]
+    )
+    far_interval_seconds = models.PositiveIntegerField(
+        default=900, validators=[MinValueValidator(60)]
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
@@ -34,7 +49,7 @@ class AppSetting(SingletonModel):
 
 class AgentMailConfig(SingletonModel):
     sender_email = models.EmailField(default="mijiatong@agent.qq.com", editable=False)
-    recipient_email = models.EmailField(blank=True)
+    recipient_email = models.EmailField(default="850634546@qq.com", editable=False)
     is_verified = models.BooleanField(default=False)
     verified_at = models.DateTimeField(null=True, blank=True)
     last_error = models.CharField(max_length=200, blank=True)
@@ -72,6 +87,8 @@ class MonitorTask(models.Model):
     last_error = models.CharField(max_length=200, blank=True)
     last_checked_at = models.DateTimeField(null=True, blank=True)
     next_check_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    claim_token = models.UUIDField(null=True, blank=True)
+    claim_expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
     detected_at = models.DateTimeField(null=True, blank=True)
     notified_at = models.DateTimeField(null=True, blank=True)
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -119,6 +136,7 @@ class Notification(models.Model):
     class Type(models.TextChoices):
         OPENING = "OPENING", "开票"
         EXPIRY = "EXPIRY", "到期"
+        SYSTEM_ALERT = "SYSTEM_ALERT", "系统提醒"
 
     class Status(models.TextChoices):
         PENDING = "PENDING", "待发送"
@@ -126,6 +144,7 @@ class Notification(models.Model):
         SENT = "SENT", "成功"
         FAILED = "FAILED", "失败"
         PERMANENT_FAILED = "PERMANENT_FAILED", "永久失败"
+        NEEDS_REVIEW = "NEEDS_REVIEW", "需要人工处理"
 
     task = models.ForeignKey(MonitorTask, on_delete=models.CASCADE, related_name="notifications")
     notification_type = models.CharField(max_length=16, choices=Type.choices)

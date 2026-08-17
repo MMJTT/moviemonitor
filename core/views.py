@@ -1,5 +1,3 @@
-from datetime import timedelta
-
 from django.core import signing
 from django.db import transaction
 from django.db.models import Prefetch
@@ -12,7 +10,6 @@ from core.adapters.base import AdapterError
 from core.adapters.maoyan import MaoyanAdapter
 from core.forms import (
     MAOYAN_CITIES,
-    AgentMailConfigForm,
     AppSettingForm,
     TaskConfirmForm,
     TaskPreviewForm,
@@ -20,6 +17,7 @@ from core.forms import (
 from core.models import AgentMailConfig, AppSetting, MonitorTask, Notification
 from core.scheduler import wake_scheduler
 from core.services.agent_mail import AgentMailError, test_agent_mail_config
+from core.services.scheduling import next_check_at_for
 from core.services.tasks import (
     PreviewCinema,
     TaskCreationError,
@@ -110,22 +108,10 @@ def _begin_agent_mail_test(config):
     return config
 
 
-@require_http_methods(["GET", "POST"])
+@require_http_methods(["GET"])
 def mail_edit(request):
     config = AgentMailConfig.get_solo()
-    form = AgentMailConfigForm(request.POST or None, instance=config)
-    if request.method == "POST" and form.is_valid():
-        config = _begin_agent_mail_test(form.save(commit=False))
-        try:
-            test_agent_mail_config(config)
-        except AgentMailError as exc:
-            _mark_agent_mail_failed(config, str(exc))
-        else:
-            _mark_agent_mail_verified(config)
-            return redirect("core:mail-edit")
-        config = AgentMailConfig.get_solo()
-        form = AgentMailConfigForm(instance=config)
-    return render(request, "core/mail_form.html", {"form": form, "config": config})
+    return render(request, "core/mail_form.html", {"config": config})
 
 
 @require_POST
@@ -152,10 +138,14 @@ def settings_edit(request):
         with task_transition(), transaction.atomic():
             setting = form.save()
             now = timezone.now()
-            MonitorTask.objects.filter(status=MonitorTask.Status.MONITORING).update(
-                next_check_at=now + timedelta(seconds=setting.poll_interval_seconds),
-                updated_at=now,
+            monitoring_tasks = list(
+                MonitorTask.objects.select_for_update().filter(
+                    status=MonitorTask.Status.MONITORING
+                )
             )
+            for task in monitoring_tasks:
+                task.next_check_at = next_check_at_for(task.show_date, now, setting)
+                task.save(update_fields=["next_check_at", "updated_at"])
             transaction.on_commit(wake_scheduler)
         return redirect("core:settings")
     return render(request, "core/settings_form.html", {"form": form, "setting": setting})

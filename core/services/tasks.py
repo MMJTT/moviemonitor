@@ -17,6 +17,7 @@ from core.adapters.base import (
 from core.adapters.maoyan import MaoyanAdapter, normalize_cinema_name
 from core.models import AgentMailConfig, AppSetting, CheckRun, MonitorTask, Notification
 from core.services.agent_mail import AgentMailError, verify_agent_mail
+from core.services.scheduling import interval_seconds_for
 
 PREVIEW_SALT = "local-task-preview"
 FAILURE_BACKOFF_SECONDS = (120, 300, 900, 1800, 3600)
@@ -320,7 +321,9 @@ def perform_check(task_id, now=None):
                 current.status = MonitorTask.Status.ERROR
                 current.next_check_at = None
             else:
-                configured_seconds = AppSetting.get_solo().poll_interval_seconds
+                configured_seconds = interval_seconds_for(
+                    current.show_date, now, AppSetting.get_solo()
+                )
                 current.next_check_at = _not_earlier_than_persisted(
                     current.next_check_at,
                     next_failure_time(now, configured_seconds, failure_count),
@@ -381,7 +384,9 @@ def perform_check(task_id, now=None):
                 defaults={"status": Notification.Status.PENDING},
             )
         else:
-            configured_seconds = AppSetting.get_solo().poll_interval_seconds
+            configured_seconds = interval_seconds_for(
+                current.show_date, now, AppSetting.get_solo()
+            )
             current.next_check_at = _not_earlier_than_persisted(
                 current.next_check_at,
                 now + timedelta(seconds=configured_seconds),

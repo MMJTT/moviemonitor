@@ -56,7 +56,7 @@ def result_for(
 def test_near_name_does_not_detect(active_task, mocker):
     """Replacing full-name equality with fuzzy matching must fail this test."""
     now = timezone.now()
-    AppSetting.objects.create(poll_interval_seconds=180)
+    AppSetting.objects.create(urgent_interval_seconds=180)
     active_task.consecutive_failures = 2
     active_task.last_error = "old-local-error"
     active_task.save()

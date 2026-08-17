@@ -13,8 +13,8 @@
   <section class="form-layout form-layout-wide">
     <aside class="form-context mail-context" aria-label="Agent Mail 发件信息">
       <div class="mail-stamp" aria-hidden="true">AGENT</div>
-      <strong>固定发件邮箱</strong>
-      <dl><div><dt>发件人</dt><dd><code>{{ config.sender_email }}</code></dd></div><div><dt>传输</dt><dd>Agent Mail CLI</dd></div></dl>
+      <strong>固定邮件地址</strong>
+      <dl><div><dt>发件人</dt><dd><code>{{ config.sender_email }}</code></dd></div><div><dt>收件人</dt><dd><code>{{ config.recipient_email }}</code></dd></div><div><dt>传输</dt><dd>Agent Mail CLI</dd></div></dl>
       <p>授权保存在本机 macOS 钥匙串中，程序不会保存邮箱密码或 OAuth Token。</p>
     </aside>
     <div class="form-card">
@@ -26,17 +26,10 @@
         <p class="notice notice-warning">Agent Mail 尚未验证。</p>
       {% endif %}
       {% if config.last_error and config.last_error != "agent-mail-auth-required" %}<p class="notice notice-error" role="alert">{{ config.last_error }}</p>{% endif %}
-      <form method="post">
+      <form method="post" action="{% url 'core:mail-test' %}">
         {% csrf_token %}
-        {% include "core/_form_fields.html" %}
-        <button class="button-primary" type="submit">保存并发送测试邮件</button>
+        <button class="button-primary" type="submit">发送测试邮件</button>
       </form>
-      {% if config.recipient_email %}
-        <form method="post" action="{% url 'core:mail-test' %}">
-          {% csrf_token %}
-          <button class="button-secondary" type="submit">重新发送测试邮件</button>
-        </form>
-      {% endif %}
     </div>
   </section>
 {% endblock %}
