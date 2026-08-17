@@ -132,14 +132,14 @@ sudo chown admin:admin local.manifest.json SHA256SUMS
 sudo chmod 0600 local.manifest.json SHA256SUMS
 ```
 
-严格按此顺序启动。`loaddata` 从只读临时 bind mount 读取；在 manifest 逐字一致前不要启动 Worker。
+严格按此顺序启动。`loaddata` 通过标准输入从只读临时 bind mount 读取，避免在 `0751` 暂存目录中枚举文件；在 manifest 逐字一致前不要启动 Worker。
 
 ```bash
 cd /opt/ticketwatch/app
 docker compose --env-file /opt/ticketwatch/.env build web worker
 docker compose --env-file /opt/ticketwatch/.env up -d postgres redis
 docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web python manage.py migrate
-docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps --volume /opt/ticketwatch/migration-data:/migration:ro web python manage.py loaddata /migration/core-data.json
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps --volume /opt/ticketwatch/migration-data:/migration:ro web sh -ec 'python manage.py loaddata --format=json - < /migration/core-data.json'
 docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web sh -ec 'python manage.py data_manifest --output /tmp/server.manifest.json >/dev/null && cat /tmp/server.manifest.json' > /opt/ticketwatch/migration-data/server.manifest.json
 if ! cmp -s /opt/ticketwatch/migration-data/local.manifest.json /opt/ticketwatch/migration-data/server.manifest.json; then
   echo 'manifest mismatch; preserve both files and keep Worker stopped' >&2

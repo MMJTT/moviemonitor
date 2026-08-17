@@ -13,9 +13,18 @@ def test_macos_checksum_and_contexts_are_copyable():
 
 
 def test_import_permissions_and_manifest_gate_fail_closed():
+    assert (
+        "sudo install -d -o admin -g admin -m 0751 /opt/ticketwatch/migration-data"
+        in DOCUMENT
+    )
     assert "sudo chown 10001:admin core-data.json" in DOCUMENT
     assert "sudo chmod 0640 core-data.json" in DOCUMENT
     assert "sudo chmod 0600 local.manifest.json SHA256SUMS" in DOCUMENT
+    assert (
+        "web sh -ec 'python manage.py loaddata --format=json - "
+        "< /migration/core-data.json'" in DOCUMENT
+    )
+    assert "web python manage.py loaddata /migration/core-data.json" not in DOCUMENT
     assert "if ! cmp -s" in DOCUMENT
     assert "exit 1" in DOCUMENT
 
