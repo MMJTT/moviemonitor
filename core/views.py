@@ -17,6 +17,7 @@ from core.forms import (
 from core.models import AgentMailConfig, AppSetting, MonitorTask, Notification
 from core.scheduler import wake_scheduler
 from core.services.agent_mail import AgentMailError, test_agent_mail_config
+from core.services.runtime_health import collect_runtime_status
 from core.services.scheduling import next_check_at_for
 from core.services.tasks import (
     PreviewCinema,
@@ -56,6 +57,7 @@ def dashboard(request):
             "recent_tasks": recent_tasks,
             "mail": AgentMailConfig.get_solo(),
             "setting": AppSetting.get_solo(),
+            "runtime_status": collect_runtime_status(),
         },
     )
 

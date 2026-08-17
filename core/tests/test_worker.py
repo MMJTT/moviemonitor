@@ -131,6 +131,7 @@ def test_worker_runs_expiry_mail_then_one_claim(mocker):
 def test_worker_loop_skips_wait_while_work_remains(settings, mocker):
     settings.WORKER_SCAN_SECONDS = 23
     loop = WorkerLoop()
+    mocker.patch("core.worker.record_worker_heartbeat")
     mocker.patch("core.worker.mark_uncertain_sending_notifications", return_value=0)
     run_once = mocker.patch.object(
         loop,
@@ -154,6 +155,7 @@ def test_worker_startup_marks_uncertain_notifications_once(settings, mocker):
     """Skipping startup recovery would leave crash-interrupted sends stranded."""
     settings.WORKER_SCAN_SECONDS = 23
     loop = WorkerLoop()
+    mocker.patch("core.worker.record_worker_heartbeat")
     mark_uncertain = mocker.patch(
         "core.worker.mark_uncertain_sending_notifications", return_value=2
     )
@@ -174,6 +176,7 @@ def test_worker_stop_interrupts_local_fallback_wait(settings, mocker):
     settings.WORKER_SCAN_SECONDS = 60
     loop = WorkerLoop()
     waiting = threading.Event()
+    mocker.patch("core.worker.record_worker_heartbeat")
     mocker.patch("core.worker.mark_uncertain_sending_notifications", return_value=0)
 
     mocker.patch.object(

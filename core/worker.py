@@ -11,6 +11,7 @@ from core.services.notifications import (
     expire_due_task,
     mark_uncertain_sending_notifications,
 )
+from core.services.runtime_health import record_worker_heartbeat
 from core.services.tasks import perform_check
 
 
@@ -30,13 +31,16 @@ class WorkerLoop:
         self._stop_event = threading.Event()
 
     def run_once(self, now=None) -> dict[str, int | bool]:
+        now = now or timezone.now()
         close_old_connections()
         try:
+            record_worker_heartbeat(now=now)
             return run_due_work(now=now)
         finally:
             close_old_connections()
 
     def run_forever(self) -> None:
+        record_worker_heartbeat(started=True)
         mark_uncertain_sending_notifications()
         while not self._stop_event.is_set():
             result = self.run_once()

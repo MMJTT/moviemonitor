@@ -16,6 +16,16 @@
     </div>
   </section>
 
+  <section class="notice" aria-labelledby="runtime-status-title">
+    <div class="notice-copy">
+      <p class="eyebrow">System health</p>
+      <h2 id="runtime-status-title">运行状态</h2>
+      <p>Worker {{ runtime_status.worker.status }} · 数据库 {{ runtime_status.database }} · Redis {{ runtime_status.redis }}</p>
+      <p>监控中 {{ runtime_status.tasks.monitoring }} · 异常 {{ runtime_status.tasks.error }} · 已开票 {{ runtime_status.tasks.detected }} · 待发通知 {{ runtime_status.tasks.pending_notifications }}</p>
+    </div>
+    <span class="status status-{{ runtime_status.status }}">{{ runtime_status.status }}</span>
+  </section>
+
   {% if not mail.is_verified %}
     <section class="notice notice-warning" aria-labelledby="mail-needed">
       <div class="notice-copy">

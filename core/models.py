@@ -59,6 +59,18 @@ class AgentMailConfig(SingletonModel):
         return "Agent Mail 配置"
 
 
+class RuntimeState(SingletonModel):
+    worker_started_at = models.DateTimeField(null=True, blank=True)
+    worker_heartbeat_at = models.DateTimeField(null=True, blank=True)
+    last_backup_at = models.DateTimeField(null=True, blank=True)
+    last_backup_name = models.CharField(  # noqa: DJ001 - explicitly nullable runtime state
+        max_length=255, null=True, blank=True
+    )
+
+    def __str__(self):
+        return "运行状态"
+
+
 class MonitorTask(models.Model):
     class Status(models.TextChoices):
         MONITORING = "MONITORING", "监控中"

@@ -17,9 +17,10 @@ Including another URLconf
 
 from django.urls import include, path
 
-from ticketwatch.health import healthz
+from ticketwatch.health import healthz, statusz
 
 urlpatterns = [
     path("healthz", healthz, name="healthz"),
+    path("statusz", statusz, name="statusz"),
     path("", include("core.urls")),
 ]
