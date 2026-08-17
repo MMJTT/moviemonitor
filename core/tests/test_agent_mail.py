@@ -2,6 +2,7 @@ import json
 import subprocess
 
 import pytest
+from django.test import override_settings
 
 from core.services.agent_mail import (
     AgentMailAuthError,
@@ -36,17 +37,30 @@ def identity_payload(sender=SENDER):
     )
 
 
-def test_verify_agent_mail_requires_the_expected_primary_alias(mocker):
+def test_verify_agent_mail_keeps_codex_as_the_local_default_workspace(mocker):
+    mocker.patch("core.services.agent_mail.shutil.which", return_value="agently-cli")
+    run = mocker.patch(
+        "core.services.agent_mail.subprocess.run",
+        return_value=completed(identity_payload()),
+    )
+
+    assert verify_agent_mail() == SENDER
+
+    assert run.call_args.kwargs["env"]["AGENTLY_WORKSPACE"] == "codex"
+
+
+@override_settings(AGENTLY_WORKSPACE="ticketwatch-server")
+def test_verify_agent_mail_uses_the_configured_workspace_and_required_primary_alias(mocker):
     mocker.patch("core.services.agent_mail.shutil.which", return_value="/usr/local/bin/agently-cli")
     run = mocker.patch(
         "core.services.agent_mail.subprocess.run",
         return_value=completed(identity_payload()),
     )
 
-    assert verify_agent_mail(SENDER) == SENDER
+    assert verify_agent_mail() == SENDER
     assert run.call_args.args[0] == ["/usr/local/bin/agently-cli", "+me"]
     assert run.call_args.kwargs["shell"] is False
-    assert run.call_args.kwargs["env"]["AGENTLY_WORKSPACE"] == "codex"
+    assert run.call_args.kwargs["env"]["AGENTLY_WORKSPACE"] == "ticketwatch-server"
 
 
 def test_verify_agent_mail_rejects_a_different_primary_alias(mocker):
@@ -57,7 +71,7 @@ def test_verify_agent_mail_rejects_a_different_primary_alias(mocker):
     )
 
     with pytest.raises(AgentMailConfigError, match="agent-mail-sender-mismatch"):
-        verify_agent_mail(SENDER)
+        verify_agent_mail()
 
 
 def test_send_agent_mail_uses_confirmed_argument_list_without_a_shell(mocker):
@@ -126,7 +140,7 @@ def test_missing_agent_mail_cli_is_a_configuration_error(mocker):
     mocker.patch("core.services.agent_mail.shutil.which", return_value=None)
 
     with pytest.raises(AgentMailConfigError, match="agent-mail-cli-unavailable"):
-        verify_agent_mail(SENDER)
+        verify_agent_mail()
 
 
 @pytest.mark.parametrize(

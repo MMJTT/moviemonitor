@@ -3,8 +3,9 @@ import os
 import shutil
 import subprocess
 
+from django.conf import settings
+
 AGENT_MAIL_SENDER = "mijiatong@agent.qq.com"
-AGENTLY_WORKSPACE = "codex"
 
 
 class AgentMailError(RuntimeError):
@@ -40,7 +41,7 @@ def _cli_path():
 
 def _run(arguments):
     environment = os.environ.copy()
-    environment["AGENTLY_WORKSPACE"] = AGENTLY_WORKSPACE
+    environment["AGENTLY_WORKSPACE"] = settings.AGENTLY_WORKSPACE
     try:
         result = subprocess.run(
             [_cli_path(), *arguments],
@@ -80,7 +81,7 @@ def _run(arguments):
     return payload
 
 
-def verify_agent_mail(expected_sender=AGENT_MAIL_SENDER):
+def verify_agent_mail():
     payload = _run(["+me"])
     data = payload.get("data")
     if not isinstance(data, dict):
@@ -94,7 +95,7 @@ def verify_agent_mail(expected_sender=AGENT_MAIL_SENDER):
         (item.get("email") for item in aliases if item.get("is_primary") is True),
         None,
     )
-    if primary != expected_sender:
+    if primary != AGENT_MAIL_SENDER:
         raise AgentMailConfigError("agent-mail-sender-mismatch")
     return primary
 
