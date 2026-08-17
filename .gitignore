@@ -17,3 +17,5 @@ logs/
 *.egg-info/
 .ticketwatch.key
 db.sqlite3
+migration-data/
+*.manifest.json
