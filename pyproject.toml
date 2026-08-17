@@ -33,6 +33,9 @@ include = ["core*", "ticketwatch*"]
 DJANGO_SETTINGS_MODULE = "ticketwatch.settings"
 python_files = ["test_*.py"]
 addopts = "-ra --strict-markers"
+markers = [
+  "postgres: requires a PostgreSQL test database",
+]
 
 [tool.ruff]
 line-length = 100

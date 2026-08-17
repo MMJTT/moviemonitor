@@ -247,7 +247,17 @@ def task_pause(request, task_id):
             return _transition_conflict()
         task.status = MonitorTask.Status.PAUSED
         task.next_check_at = None
-        task.save(update_fields=["status", "next_check_at", "updated_at"])
+        task.claim_token = None
+        task.claim_expires_at = None
+        task.save(
+            update_fields=[
+                "status",
+                "next_check_at",
+                "claim_token",
+                "claim_expires_at",
+                "updated_at",
+            ]
+        )
     return _lifecycle_redirect(task_id)
 
 
@@ -264,12 +274,16 @@ def task_resume(request, task_id):
         task.consecutive_failures = 0
         task.last_error = ""
         task.next_check_at = timezone.now()
+        task.claim_token = None
+        task.claim_expires_at = None
         task.save(
             update_fields=[
                 "status",
                 "consecutive_failures",
                 "last_error",
                 "next_check_at",
+                "claim_token",
+                "claim_expires_at",
                 "updated_at",
             ]
         )

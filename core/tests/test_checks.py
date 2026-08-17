@@ -1,6 +1,8 @@
+import uuid
 from datetime import timedelta
 
 import pytest
+from django.urls import reverse
 from django.utils import timezone
 
 from core.adapters.base import (
@@ -13,6 +15,7 @@ from core.adapters.base import (
 )
 from core.adapters.maoyan import MaoyanAdapter, normalize_cinema_name
 from core.models import AppSetting, CheckRun, MonitorTask, Notification
+from core.services.leases import StaleTaskClaim
 from core.services.tasks import perform_check
 
 
@@ -50,6 +53,92 @@ def result_for(
         ),
         content_fingerprint="fixture-fingerprint",
     )
+
+
+@pytest.mark.django_db
+def test_wrong_claim_token_cannot_submit_check_result(active_task, mocker):
+    """Accepting a stale token would let an old worker overwrite newer task state."""
+    active_task.claim_token = uuid.uuid4()
+    active_task.claim_expires_at = timezone.now() + timedelta(minutes=5)
+    active_task.save(update_fields=["claim_token", "claim_expires_at"])
+    fetch = mocker.patch("core.services.tasks.MaoyanAdapter.fetch")
+
+    with pytest.raises(StaleTaskClaim):
+        perform_check(active_task.pk, claim_token=uuid.uuid4())
+
+    assert not CheckRun.objects.filter(task=active_task).exists()
+    fetch.assert_not_called()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("outcome", "expected_check_status", "expected_task_status"),
+    [
+        ("no-opening", CheckRun.Status.SUCCEEDED, MonitorTask.Status.MONITORING),
+        ("opening", CheckRun.Status.SUCCEEDED, MonitorTask.Status.DETECTED),
+        ("retryable-failure", CheckRun.Status.STRUCTURE_ERROR, MonitorTask.Status.MONITORING),
+        ("terminal-failure", CheckRun.Status.STRUCTURE_ERROR, MonitorTask.Status.ERROR),
+    ],
+)
+def test_correct_claim_token_is_cleared_after_check(
+    active_task, mocker, outcome, expected_check_status, expected_task_status
+):
+    """Leaving a completed lease active would block the next due check."""
+    token = uuid.uuid4()
+    active_task.claim_token = token
+    active_task.claim_expires_at = timezone.now() + timedelta(minutes=5)
+    if outcome == "terminal-failure":
+        active_task.consecutive_failures = 4
+    active_task.save(
+        update_fields=["claim_token", "claim_expires_at", "consecutive_failures"]
+    )
+    if outcome.endswith("failure"):
+        mocker.patch(
+            "core.services.tasks.MaoyanAdapter.fetch",
+            side_effect=PageStructureError("untrusted response body"),
+        )
+    else:
+        mocker.patch(
+            "core.services.tasks.MaoyanAdapter.fetch",
+            return_value=result_for(
+                active_task,
+                active_task.cinema_name,
+                outcome == "opening",
+            ),
+        )
+
+    check = perform_check(active_task.pk, claim_token=token)
+
+    active_task.refresh_from_db()
+    assert check.status == expected_check_status
+    assert active_task.status == expected_task_status
+    assert active_task.claim_token is None
+    assert active_task.claim_expires_at is None
+
+
+@pytest.mark.django_db
+def test_stale_claim_result_cannot_overwrite_pause(client, active_task, mocker):
+    """A network result returning after pause must not restore monitoring state."""
+    token = uuid.uuid4()
+    active_task.claim_token = token
+    active_task.claim_expires_at = timezone.now() + timedelta(minutes=5)
+    active_task.save(update_fields=["claim_token", "claim_expires_at"])
+
+    def pause_during_fetch(target):
+        response = client.post(reverse("core:task-pause", args=[active_task.pk]))
+        assert response.status_code == 302
+        return result_for(active_task, active_task.cinema_name, True)
+
+    mocker.patch("core.services.tasks.MaoyanAdapter.fetch", side_effect=pause_during_fetch)
+
+    with pytest.raises(StaleTaskClaim):
+        perform_check(active_task.pk, claim_token=token)
+
+    active_task.refresh_from_db()
+    assert active_task.status == MonitorTask.Status.PAUSED
+    assert active_task.claim_token is None
+    assert active_task.claim_expires_at is None
+    assert not CheckRun.objects.filter(task=active_task).exists()
 
 
 @pytest.mark.django_db

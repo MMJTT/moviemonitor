@@ -31,7 +31,18 @@ def _expire_locked_task(task, now):
         task.status = MonitorTask.Status.EXPIRED
         task.expired_at = now
         task.next_check_at = None
-        task.save(update_fields=["status", "expired_at", "next_check_at", "updated_at"])
+        task.claim_token = None
+        task.claim_expires_at = None
+        task.save(
+            update_fields=[
+                "status",
+                "expired_at",
+                "next_check_at",
+                "claim_token",
+                "claim_expires_at",
+                "updated_at",
+            ]
+        )
         Notification.objects.filter(
             task=task,
             notification_type=Notification.Type.OPENING,

@@ -1,4 +1,5 @@
 import threading
+import uuid
 from datetime import timedelta
 
 import pytest
@@ -72,12 +73,18 @@ def test_lifecycle_post_requires_csrf(active_task):
 @pytest.mark.django_db
 def test_pause_stops_monitoring_and_clears_due_time(client, active_task):
     """Leaving a paused task due would let the scheduler continue checking it."""
+    active_task.claim_token = uuid.uuid4()
+    active_task.claim_expires_at = timezone.now() + timedelta(minutes=5)
+    active_task.save(update_fields=["claim_token", "claim_expires_at"])
+
     response = client.post(reverse("core:task-pause", args=[active_task.pk]))
 
     active_task.refresh_from_db()
     assert response.status_code == 302
     assert active_task.status == MonitorTask.Status.PAUSED
     assert active_task.next_check_at is None
+    assert active_task.claim_token is None
+    assert active_task.claim_expires_at is None
 
 
 @pytest.mark.django_db
@@ -92,6 +99,8 @@ def test_resume_resets_failures_schedules_now_and_wakes(
         consecutive_failures=5,
         last_error="old sanitized error",
         next_check_at=None,
+        claim_token=uuid.uuid4(),
+        claim_expires_at=now + timedelta(minutes=5),
     )
     scheduler = RecordingScheduler()
     set_process_scheduler(scheduler)
@@ -106,6 +115,8 @@ def test_resume_resets_failures_schedules_now_and_wakes(
     assert task.consecutive_failures == 0
     assert task.last_error == ""
     assert task.next_check_at == now
+    assert task.claim_token is None
+    assert task.claim_expires_at is None
     assert scheduler.wake_count == 1
 
 
@@ -137,6 +148,9 @@ def test_cancel_detected_task_invalidates_pending_opening_before_dispatch(
 ):
     """Leaving pending opening mail eligible after cancellation could notify against user intent."""
     now = timezone.now()
+    opening_notification.task.claim_token = uuid.uuid4()
+    opening_notification.task.claim_expires_at = now + timedelta(minutes=5)
+    opening_notification.task.save(update_fields=["claim_token", "claim_expires_at"])
     mocker.patch("core.views.timezone.now", return_value=now)
     send = mocker.patch(
         "core.services.notifications.send_agent_mail", return_value="queued"
@@ -152,6 +166,8 @@ def test_cancel_detected_task_invalidates_pending_opening_before_dispatch(
     assert opening_notification.task.status == MonitorTask.Status.CANCELLED
     assert opening_notification.task.cancelled_at == now
     assert opening_notification.task.next_check_at is None
+    assert opening_notification.task.claim_token is None
+    assert opening_notification.task.claim_expires_at is None
     assert opening_notification.status == Notification.Status.PERMANENT_FAILED
     assert opening_notification.last_error == "task-no-longer-detected"
 
@@ -159,6 +175,23 @@ def test_cancel_detected_task_invalidates_pending_opening_before_dispatch(
     opening_notification.refresh_from_db()
     assert opening_notification.status == Notification.Status.PERMANENT_FAILED
     send.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_expiry_invalidates_active_lease(active_task):
+    """An expired task must reject any in-flight check result."""
+    now = timezone.now()
+    active_task.show_date = timezone.localdate(now) - timedelta(days=1)
+    active_task.claim_token = uuid.uuid4()
+    active_task.claim_expires_at = now + timedelta(minutes=5)
+    active_task.save(update_fields=["show_date", "claim_token", "claim_expires_at"])
+
+    assert expire_due_task(now=now) is True
+
+    active_task.refresh_from_db()
+    assert active_task.status == MonitorTask.Status.EXPIRED
+    assert active_task.claim_token is None
+    assert active_task.claim_expires_at is None
 
 
 @pytest.mark.django_db(transaction=True)

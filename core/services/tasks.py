@@ -17,6 +17,7 @@ from core.adapters.base import (
 from core.adapters.maoyan import MaoyanAdapter, normalize_cinema_name
 from core.models import AgentMailConfig, AppSetting, CheckRun, MonitorTask, Notification
 from core.services.agent_mail import AgentMailError, verify_agent_mail
+from core.services.leases import StaleTaskClaim, claim_matches
 from core.services.scheduling import interval_seconds_for
 
 PREVIEW_SALT = "local-task-preview"
@@ -205,8 +206,17 @@ def cancel_task(task_id, now=None):
         task.status = MonitorTask.Status.CANCELLED
         task.cancelled_at = now
         task.next_check_at = None
+        task.claim_token = None
+        task.claim_expires_at = None
         task.save(
-            update_fields=["status", "cancelled_at", "next_check_at", "updated_at"]
+            update_fields=[
+                "status",
+                "cancelled_at",
+                "next_check_at",
+                "claim_token",
+                "claim_expires_at",
+                "updated_at",
+            ]
         )
         if opening is not None and opening.status == Notification.Status.PENDING:
             opening.status = Notification.Status.PERMANENT_FAILED
@@ -275,9 +285,11 @@ def _failure_details(exc):
     raise TypeError("unsupported adapter failure")
 
 
-def perform_check(task_id, now=None):
+def perform_check(task_id, now=None, claim_token=None):
     now = now or timezone.now()
     task = MonitorTask.objects.get(pk=task_id)
+    if not claim_matches(task, claim_token):
+        raise StaleTaskClaim("task lease no longer belongs to this worker")
     if task.status != MonitorTask.Status.MONITORING:
         previous = task.checks.order_by("-pk").first()
         if previous is None:
@@ -297,6 +309,8 @@ def perform_check(task_id, now=None):
     finished_at = timezone.now()
     with task_transition(), transaction.atomic():
         current = MonitorTask.objects.select_for_update().get(pk=task_id)
+        if not claim_matches(current, claim_token):
+            raise StaleTaskClaim("task lease no longer belongs to this worker")
         if current.status != MonitorTask.Status.MONITORING:
             previous = current.checks.order_by("-pk").first()
             if previous is None:
@@ -317,6 +331,8 @@ def perform_check(task_id, now=None):
             current.consecutive_failures = failure_count
             current.last_error = error_summary
             current.last_checked_at = now
+            current.claim_token = None
+            current.claim_expires_at = None
             if check_status == CheckRun.Status.CONFIG_ERROR or failure_count >= 5:
                 current.status = MonitorTask.Status.ERROR
                 current.next_check_at = None
@@ -335,6 +351,8 @@ def perform_check(task_id, now=None):
                     "last_checked_at",
                     "next_check_at",
                     "status",
+                    "claim_token",
+                    "claim_expires_at",
                     "updated_at",
                 ]
             )
@@ -351,6 +369,8 @@ def perform_check(task_id, now=None):
         current.consecutive_failures = 0
         current.last_error = ""
         current.last_checked_at = now
+        current.claim_token = None
+        current.claim_expires_at = None
         match = next(
             (
                 cinema
@@ -375,6 +395,8 @@ def perform_check(task_id, now=None):
                     "consecutive_failures",
                     "last_error",
                     "last_checked_at",
+                    "claim_token",
+                    "claim_expires_at",
                     "updated_at",
                 ]
             )
@@ -397,6 +419,8 @@ def perform_check(task_id, now=None):
                     "last_error",
                     "last_checked_at",
                     "next_check_at",
+                    "claim_token",
+                    "claim_expires_at",
                     "updated_at",
                 ]
             )
