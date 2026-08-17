@@ -65,6 +65,22 @@ def test_wait_for_worker_returns_redis_wake_result(settings, mocker):
     ]
 
 
+def test_wait_client_read_timeout_exceeds_blocking_pop_timeout(settings, mocker):
+    """A shorter socket timeout would turn a healthy idle Redis into a failure."""
+    settings.REDIS_URL = "redis://example.test:6379/4"
+    client = mocker.Mock()
+    client.brpop.return_value = None
+    from_url = mocker.patch(
+        "core.services.coordination.redis.Redis.from_url", return_value=client
+    )
+
+    assert wait_for_worker(10) is False
+
+    assert from_url.call_args.kwargs["socket_connect_timeout"] == 1
+    assert from_url.call_args.kwargs["socket_timeout"] > 10
+    client.brpop.assert_called_once_with("ticketwatch:worker:wake", timeout=10)
+
+
 def test_wait_for_worker_uses_bounded_local_wait_after_redis_failure(
     settings, caplog, mocker
 ):

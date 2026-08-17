@@ -11,11 +11,11 @@ _WAKE_QUEUE = "ticketwatch:worker:wake"
 _fallback_wait_event = threading.Event()
 
 
-def _redis_client():
+def _redis_client(socket_timeout=1):
     return redis.Redis.from_url(
         settings.REDIS_URL,
         socket_connect_timeout=1,
-        socket_timeout=1,
+        socket_timeout=socket_timeout,
     )
 
 
@@ -37,7 +37,8 @@ def wait_for_worker(
 ) -> bool:
     if settings.REDIS_URL:
         try:
-            return _redis_client().brpop(_WAKE_QUEUE, timeout=timeout_seconds) is not None
+            client = _redis_client(socket_timeout=timeout_seconds + 1)
+            return client.brpop(_WAKE_QUEUE, timeout=timeout_seconds) is not None
         except RedisError as exc:
             logger.warning("Redis worker wait failed: %s", type(exc).__name__)
     (stop_event or _fallback_wait_event).wait(timeout_seconds)
