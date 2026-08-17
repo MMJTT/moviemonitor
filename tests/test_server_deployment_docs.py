@@ -1,6 +1,5 @@
 from pathlib import Path
 
-
 DOCUMENT = (Path(__file__).resolve().parents[1] / "docs" / "server-deployment.md").read_text(
     encoding="utf-8"
 )
@@ -31,7 +30,10 @@ def test_private_deployment_and_environment_invariants_are_documented():
 
 def test_upgrade_rollback_and_incident_evidence_are_persistent():
     assert "/opt/ticketwatch/data/upgrade-records" in DOCUMENT
-    assert "RECORD='/opt/ticketwatch/data/upgrade-records/REPLACE_WITH_SELECTED_RECORD.env'" in DOCUMENT
+    assert (
+        "RECORD='/opt/ticketwatch/data/upgrade-records/REPLACE_WITH_SELECTED_RECORD.env'"
+        in DOCUMENT
+    )
     assert "BACKUP_SHA256" in DOCUMENT
     assert "/opt/ticketwatch/data/incidents/$INCIDENT_ID" in DOCUMENT
     assert "failure-scene.sql.gz" in DOCUMENT
@@ -39,7 +41,7 @@ def test_upgrade_rollback_and_incident_evidence_are_persistent():
 
 
 def test_weekly_mac_copy_checks_source_and_destination_hashes():
-    assert "scp \"admin@47.116.69.108:$REMOTE_BACKUP\"" in DOCUMENT
+    assert 'scp "admin@47.116.69.108:$REMOTE_BACKUP"' in DOCUMENT
     assert "REMOTE_SHA=" in DOCUMENT
     assert "LOCAL_SHA=" in DOCUMENT
     assert 'test "$REMOTE_SHA" = "$LOCAL_SHA"' in DOCUMENT
