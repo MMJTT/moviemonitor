@@ -55,3 +55,10 @@ def test_worker_agent_mail_home_requires_preprovisioned_bind(compose_config):
     assert agent_mail_home["type"] == "bind"
     assert agent_mail_home["source"] == "/tmp/ticketwatch-contract-agently"
     assert agent_mail_home["bind"]["create_host_path"] is False
+
+
+def test_postgres_healthcheck_uses_configured_database(compose_config):
+    healthcheck_command = compose_config["services"]["postgres"]["healthcheck"]["test"][1]
+
+    assert "POSTGRES_USER" in healthcheck_command
+    assert "POSTGRES_DB" in healthcheck_command

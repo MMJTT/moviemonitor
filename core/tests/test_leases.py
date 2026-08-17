@@ -3,7 +3,7 @@ import uuid
 from datetime import timedelta
 
 import pytest
-from django.db import close_old_connections, connection
+from django.db import close_old_connections, connection, connections
 from django.utils import timezone
 
 from core.models import MonitorTask
@@ -100,7 +100,7 @@ def test_postgres_concurrent_claimers_cannot_claim_same_task(task_factory):
         except BaseException as exc:
             errors.append(exc)
         finally:
-            close_old_connections()
+            connections.close_all()
 
     threads = [threading.Thread(target=claim) for _ in range(2)]
     for thread in threads:
