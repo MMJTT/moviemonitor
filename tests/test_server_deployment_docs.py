@@ -25,6 +25,8 @@ def test_private_deployment_and_environment_invariants_are_documented():
     assert "RELEASE_REF='refs/heads/feature/ticket-monitor'" in DOCUMENT
     assert 'git ls-remote --exit-code "$REPOSITORY_URL" "$RELEASE_REF"' in DOCUMENT
     assert 'merge-base --is-ancestor "$RELEASE_SHA" FETCH_HEAD' in DOCUMENT
+    reviewed_ref = DOCUMENT[DOCUMENT.index("RELEASE_REF=") : DOCUMENT.index("创建 `.env`")]
+    assert "set -Eeuo pipefail" in reviewed_ref
     assert "admin:admin" in DOCUMENT
     assert "sudo test -f /opt/ticketwatch/.env && sudo test ! -L" in DOCUMENT
     assert "TICKETWATCH_ENV_FILE=/opt/ticketwatch/.env" in DOCUMENT
@@ -56,13 +58,15 @@ def test_rollback_record_is_strict_and_validated_before_service_stop():
     )
 
 
-def test_incident_snapshot_has_no_placeholder_or_overwrite_path():
+def test_incident_snapshot_uses_atomic_no_replace_publication():
     assert "REPLACE_WITH_TICKET_OR_TIMESTAMP" not in DOCUMENT
     assert "od -An -N4 -tx1 /dev/urandom" in DOCUMENT
-    assert "sudo test ! -e \"$INCIDENT_DIR\"" in DOCUMENT
-    assert "sudo test ! -e \"$FAILURE_SCENE_COPY\"" in DOCUMENT
-    assert "sudo test ! -e \"$FAILURE_SCENE_RECORD\"" in DOCUMENT
-    assert "sudo cp --no-clobber --preserve=mode" in DOCUMENT
+    assert "/opt/ticketwatch/data/incidents" in DOCUMENT
+    assert 'mkdir --mode=0700 -- "$INCIDENT_DIR"' in DOCUMENT
+    assert "install -d -o admin -g admin -m 0700 \"$INCIDENT_DIR\"" not in DOCUMENT
+    assert "ln --no-target-directory -- \"$COPY_TMP\" \"$FAILURE_SCENE_COPY\"" in DOCUMENT
+    assert "ln --no-target-directory -- \"$RECORD_TMP\" \"$FAILURE_SCENE_RECORD\"" in DOCUMENT
+    assert "cleanup_incident_temps" in DOCUMENT
 
 
 def test_weekly_mac_copy_checks_source_and_destination_hashes():

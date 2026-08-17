@@ -49,6 +49,7 @@ sudo install -d -o 999 -g 999 -m 0700 /opt/ticketwatch/data/postgres
 sudo install -d -o 999 -g 999 -m 0700 /opt/ticketwatch/data/redis
 sudo install -d -o 10001 -g 10001 -m 0700 /opt/ticketwatch/data/agently
 sudo install -d -o admin -g admin -m 0700 /opt/ticketwatch/data/backups
+sudo install -d -o admin -g admin -m 0700 /opt/ticketwatch/data/incidents
 sudo install -d -o admin -g admin -m 0700 /opt/ticketwatch/data/upgrade-records
 sudo install -d -o admin -g admin -m 0700 /opt/ticketwatch/logs
 sudo install -d -o admin -g admin -m 0751 /opt/ticketwatch/migration-data
@@ -60,6 +61,7 @@ sudo install -d -o admin -g admin -m 0751 /opt/ticketwatch/migration-data
 REPOSITORY_URL='https://github.com/MMJTT/moviemonitor.git'
 RELEASE_REF='refs/heads/feature/ticket-monitor'
 RELEASE_SHA='49b4549308c056db07a44174983ac86e9d73552b'
+set -Eeuo pipefail
 git ls-remote --exit-code "$REPOSITORY_URL" "$RELEASE_REF"
 sudo -u admin git clone --no-checkout "$REPOSITORY_URL" /opt/ticketwatch/app
 sudo -u admin git -C /opt/ticketwatch/app fetch --no-tags origin "$RELEASE_REF"
@@ -311,23 +313,41 @@ printf '%s\n' "$INCIDENT_ID" | grep -Eq '^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}$'
 INCIDENT_DIR="/opt/ticketwatch/data/incidents/$INCIDENT_ID"
 FAILURE_SCENE_COPY="$INCIDENT_DIR/failure-scene.sql.gz"
 FAILURE_SCENE_RECORD="$INCIDENT_DIR/failure-scene-record.txt"
-sudo test ! -e "$INCIDENT_DIR" && sudo test ! -L "$INCIDENT_DIR"
+umask 077
+mkdir --mode=0700 -- "$INCIDENT_DIR"
+test "$(stat -c '%U:%G:%a' "$INCIDENT_DIR")" = 'admin:admin:700'
 test -f "$BACKUP"
 ./deploy/verify-backup.sh "$BACKUP"
 ./deploy/backup-postgres.sh
 FAILURE_SCENE_BACKUP=$(find /opt/ticketwatch/data/backups -maxdepth 1 -type f -name 'ticketwatch-*.sql.gz' -printf '%T@ %p\n' | sort -n | tail -n 1 | cut -d' ' -f2-)
 test -n "$FAILURE_SCENE_BACKUP"
-sudo install -d -o admin -g admin -m 0700 "$INCIDENT_DIR"
-sudo test ! -e "$FAILURE_SCENE_COPY" && sudo test ! -L "$FAILURE_SCENE_COPY"
-sudo test ! -e "$FAILURE_SCENE_RECORD" && sudo test ! -L "$FAILURE_SCENE_RECORD"
-sudo cp --no-clobber --preserve=mode "$FAILURE_SCENE_BACKUP" "$FAILURE_SCENE_COPY"
-sudo chown admin:admin "$FAILURE_SCENE_COPY"
-sudo chmod 0600 "$FAILURE_SCENE_COPY"
+COPY_TMP=$(mktemp "$INCIDENT_DIR/.failure-scene.XXXXXX")
+RECORD_TMP=$(mktemp "$INCIDENT_DIR/.failure-scene-record.XXXXXX")
+cleanup_incident_temps() {
+  local status=$?
+  trap - EXIT
+  for temporary in "${COPY_TMP:-}" "${RECORD_TMP:-}"; do
+    if [[ -n "$temporary" && -e "$temporary" ]]; then
+      rm -f -- "$temporary" || status=1
+    fi
+  done
+  exit "$status"
+}
+trap cleanup_incident_temps EXIT
+cp --preserve=mode "$FAILURE_SCENE_BACKUP" "$COPY_TMP"
+chown admin:admin "$COPY_TMP"
+chmod 0600 "$COPY_TMP"
+ln --no-target-directory -- "$COPY_TMP" "$FAILURE_SCENE_COPY"
+rm -f -- "$COPY_TMP"
+COPY_TMP=
 cmp -s "$FAILURE_SCENE_BACKUP" "$FAILURE_SCENE_COPY"
 FAILURE_SCENE_SHA=$(sha256sum "$FAILURE_SCENE_COPY" | awk '{print $1}')
-printf 'failure_scene_backup=%s\nsha256=%s\n' "$FAILURE_SCENE_COPY" "$FAILURE_SCENE_SHA" | sudo tee "$FAILURE_SCENE_RECORD" >/dev/null
-sudo chown admin:admin "$FAILURE_SCENE_RECORD"
-sudo chmod 0600 "$FAILURE_SCENE_RECORD"
+printf 'failure_scene_backup=%s\nsha256=%s\n' "$FAILURE_SCENE_COPY" "$FAILURE_SCENE_SHA" > "$RECORD_TMP"
+chmod 0600 "$RECORD_TMP"
+ln --no-target-directory -- "$RECORD_TMP" "$FAILURE_SCENE_RECORD"
+rm -f -- "$RECORD_TMP"
+RECORD_TMP=
+trap - EXIT
 docker compose --env-file /opt/ticketwatch/.env stop worker web
 gzip -dc -- "$BACKUP" | docker compose --env-file /opt/ticketwatch/.env exec -T postgres sh -ec 'dropdb --if-exists --no-password --username "$POSTGRES_USER" "$POSTGRES_DB"; createdb --no-password --username "$POSTGRES_USER" "$POSTGRES_DB"; pg_restore --exit-on-error --no-owner --no-acl --no-password --username "$POSTGRES_USER" --dbname "$POSTGRES_DB"'
 docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web python manage.py migrate
