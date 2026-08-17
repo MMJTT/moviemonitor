@@ -10,6 +10,10 @@ dependencies = [
   "Django>=5.2,<5.3",
   "requests>=2.32,<3",
   "beautifulsoup4>=4.13,<5",
+  "psycopg[binary]>=3.2,<4",
+  "redis>=6,<7",
+  "gunicorn>=23,<24",
+  "whitenoise>=6.9,<7",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +25,9 @@ dev = [
   "responses>=0.25,<1",
   "ruff>=0.12,<1",
 ]
+
+[tool.setuptools.packages.find]
+include = ["core*", "ticketwatch*"]
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "ticketwatch.settings"

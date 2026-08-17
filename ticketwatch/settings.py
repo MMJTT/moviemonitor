@@ -13,6 +13,8 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 import os
 from pathlib import Path
 
+from ticketwatch.config import build_database_config, env_bool, validate_production_env
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -21,12 +23,20 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
+ENVIRONMENT = os.environ.get("TICKETWATCH_ENV", "local")
+validate_production_env(os.environ)
+
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "local-ticketwatch-development-key")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = env_bool(os.environ, "DJANGO_DEBUG", ENVIRONMENT != "production")
 
-ALLOWED_HOSTS = ["127.0.0.1", "localhost", "testserver"]
+ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost,testserver").split(",")
+
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+WORKER_SCAN_SECONDS = int(os.environ.get("WORKER_SCAN_SECONDS", "10"))
+WORKER_LEASE_SECONDS = int(os.environ.get("WORKER_LEASE_SECONDS", "300"))
+AGENTLY_WORKSPACE = os.environ.get("AGENTLY_WORKSPACE", "codex")
 
 
 # Application definition
@@ -43,6 +53,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -74,12 +85,7 @@ WSGI_APPLICATION = "ticketwatch.wsgi.application"
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
-    }
-}
+DATABASES = build_database_config(os.environ, BASE_DIR)
 
 
 # Password validation
@@ -119,6 +125,7 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STATICFILES_DIRS = [BASE_DIR / "static"]
+WHITENOISE_AUTOREFRESH = ENVIRONMENT != "production"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
