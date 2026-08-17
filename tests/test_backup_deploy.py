@@ -30,6 +30,16 @@ set -eu
 printf '%s\n' "$*" >>"$COMMAND_LOG"
 case " $* " in
   *" pg_dump "*)
+    if [[ -n "${RACE_FINAL_PATH:-}" ]]; then
+      case "${RACE_FINAL_KIND:-}" in
+        directory) mkdir "$RACE_FINAL_PATH" ;;
+        symlink)
+          mkdir "$RACE_FINAL_PATH.target"
+          /bin/ln -s "$RACE_FINAL_PATH.target" "$RACE_FINAL_PATH"
+          ;;
+        *) exit 95 ;;
+      esac
+    fi
     if [[ -n "${TRUST_BREAK_TRIGGER:-}" ]]; then
       : >"$TRUST_BREAK_TRIGGER"
     fi
@@ -59,6 +69,25 @@ case " $* " in
   *" dropdb "*) exit "${DROPDB_EXIT:-0}" ;;
   *) exit 97 ;;
 esac
+""",
+    )
+    _write_executable(
+        fake_bin / "ln",
+        """#!/usr/bin/env python3
+import os
+import sys
+
+args = sys.argv[1:]
+no_target_directory = args[:2] == ["--no-target-directory", "--"]
+if no_target_directory:
+    source, destination = args[2:]
+elif args[:1] == ["--"]:
+    source, destination = args[1:]
+else:
+    raise SystemExit(94)
+if not no_target_directory and os.path.isdir(destination):
+    destination = os.path.join(destination, os.path.basename(source))
+os.link(source, destination)
 """,
     )
     _write_executable(
@@ -346,6 +375,32 @@ def test_env_command_substitution_is_rejected_without_execution(script_name, tmp
 
 
 @pytest.mark.parametrize("script_name", ["backup-postgres.sh", "verify-backup.sh"])
+def test_whitespace_prefixed_command_like_duplicate_is_not_a_comment(script_name, tmp_path):
+    script, root = _sandbox_script(script_name, tmp_path)
+    _prepare_install_root(root)
+    sentinel = tmp_path / "must-not-exist"
+    (root / ".env").write_text(
+        "POSTGRES_USER=ticketwatch\n"
+        "POSTGRES_DB=ticketwatch\n"
+        ' POSTGRES_USER="$(command)" # x\n'
+        f' POSTGRES_USER="$(touch {sentinel})" # x\n'
+    )
+    fake_bin, command_log = _fake_commands(tmp_path)
+    env = _base_env(fake_bin, command_log)
+    args: tuple[str, ...] = ()
+    if script_name == "verify-backup.sh":
+        backup = root / "data" / "backups" / "ticketwatch-20260817T032000Z.sql.gz"
+        backup.write_bytes(b"dump")
+        args = (str(backup),)
+
+    result = _run(script, env, *args)
+
+    assert result.returncode != 0
+    assert not sentinel.exists()
+    assert not command_log.exists()
+
+
+@pytest.mark.parametrize("script_name", ["backup-postgres.sh", "verify-backup.sh"])
 def test_scripts_reject_symlinked_env_file(script_name, tmp_path):
     script, root = _sandbox_script(script_name, tmp_path)
     _prepare_install_root(root)
@@ -457,6 +512,31 @@ def test_concurrent_same_second_backup_never_replaces_first_publication(tmp_path
     assert len(commands) == 2
     assert " pg_dump " in f" {commands[0]} "
     assert " mark_backup_success " in f" {commands[1]} "
+
+
+@pytest.mark.parametrize("raced_target_kind", ["directory", "symlink"])
+def test_backup_publish_never_treats_raced_target_as_directory(raced_target_kind, tmp_path):
+    script, root = _sandbox_script("backup-postgres.sh", tmp_path)
+    _prepare_install_root(root)
+    backup_dir = root / "data" / "backups"
+    fake_bin, command_log = _fake_commands(tmp_path)
+    final_path = backup_dir / "ticketwatch-20260817T032000Z.sql.gz"
+    env = {
+        **_base_env(fake_bin, command_log),
+        "RACE_FINAL_KIND": raced_target_kind,
+        "RACE_FINAL_PATH": str(final_path),
+        "EXPECTED_FINAL": str(final_path),
+        "EXPECTED_OLD": str(backup_dir / "old.sql.gz"),
+    }
+
+    result = _run(script, env)
+
+    assert result.returncode != 0
+    assert len(command_log.read_text().splitlines()) == 1
+    assert list(backup_dir.glob(".ticketwatch-backup.??????")) == []
+    target_dir = final_path if raced_target_kind == "directory" else Path(f"{final_path}.target")
+    assert target_dir.is_dir()
+    assert list(target_dir.iterdir()) == []
 
 
 @pytest.mark.parametrize(

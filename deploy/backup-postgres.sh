@@ -48,15 +48,18 @@ validate_storage_boundary() {
 }
 
 parse_postgres_identifiers() {
-  local line value
+  local line trimmed value
   local user_seen=0
   local db_seen=0
   POSTGRES_USER=
   POSTGRES_DB=
 
   while IFS= read -r line || [[ -n "$line" ]]; do
+    trimmed=${line#"${line%%[![:space:]]*}"}
+    case "$trimmed" in
+      '' | '#'* ) continue ;;
+    esac
     case "$line" in
-      '' | [[:space:]]*'#'*) continue ;;
       POSTGRES_USER=*)
         (( user_seen == 0 )) || return 1
         value=${line#POSTGRES_USER=}
@@ -139,7 +142,7 @@ docker compose --env-file "$ENV_FILE" exec -T postgres \
   --username "$POSTGRES_USER" "$POSTGRES_DB" | gzip -c >"$TEMP_PATH"
 test -s "$TEMP_PATH"
 validate_storage_boundary || exit 2
-ln -- "$TEMP_PATH" "$FINAL_PATH"
+ln --no-target-directory -- "$TEMP_PATH" "$FINAL_PATH"
 rm -f -- "$TEMP_PATH"
 TEMP_PATH=
 

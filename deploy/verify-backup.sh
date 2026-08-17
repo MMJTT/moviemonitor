@@ -47,15 +47,18 @@ validate_storage_boundary() {
 }
 
 parse_postgres_identifiers() {
-  local line value
+  local line trimmed value
   local user_seen=0
   local db_seen=0
   POSTGRES_USER=
   POSTGRES_DB=
 
   while IFS= read -r line || [[ -n "$line" ]]; do
+    trimmed=${line#"${line%%[![:space:]]*}"}
+    case "$trimmed" in
+      '' | '#'* ) continue ;;
+    esac
     case "$line" in
-      '' | [[:space:]]*'#'*) continue ;;
       POSTGRES_USER=*)
         (( user_seen == 0 )) || return 1
         value=${line#POSTGRES_USER=}
