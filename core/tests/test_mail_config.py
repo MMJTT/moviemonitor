@@ -46,7 +46,6 @@ def test_sending_fixed_recipient_test_mail_verifies_identity(client, mocker):
 
 
 @pytest.mark.django_db
-@pytest.mark.django_db
 def test_agent_mail_auth_failure_leaves_configuration_unverified(client, mocker):
     mocker.patch(
         "core.views.test_agent_mail_config",

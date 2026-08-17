@@ -9,10 +9,10 @@
       <h1>盯住开票，<br><em>不必守着刷新。</em></h1>
       <p class="lede">锁定一部电影、一个日期和一家影院。系统在本机安静检查，开票或到期时只发送一次邮件。</p>
     </div>
-    <div class="screen-status" aria-label="当前轮询设置">
+    <div class="screen-status" aria-label="当前三级检查频率">
       <div class="screen-status-head"><span class="live-light" aria-hidden="true"></span>MONITOR READY</div>
-      <strong><span>{{ setting.poll_interval_seconds }}</span><small>秒</small></strong>
-      <div class="screen-status-foot"><span>检查间隔</span><a href="{% url 'core:settings' %}">修改</a></div>
+      <strong><span>紧急 {{ setting.urgent_interval_seconds }} 秒</span><span>临近 {{ setting.near_interval_seconds }} 秒</span><span>远期 {{ setting.far_interval_seconds }} 秒</span></strong>
+      <div class="screen-status-foot"><span>按演出日期自动选择</span><a href="{% url 'core:settings' %}">修改</a></div>
     </div>
   </section>
 

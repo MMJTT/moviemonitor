@@ -106,6 +106,22 @@ def test_dashboard_guides_first_run_to_agent_mail(client):
 
 
 @pytest.mark.django_db
+def test_dashboard_shows_all_three_adaptive_intervals(client):
+    setting = AppSetting.get_solo()
+    setting.urgent_interval_seconds = 61
+    setting.near_interval_seconds = 301
+    setting.far_interval_seconds = 901
+    setting.save()
+
+    body = client.get(reverse("core:dashboard")).content.decode()
+
+    assert "紧急 61 秒" in body
+    assert "临近 301 秒" in body
+    assert "远期 901 秒" in body
+    assert "{{ setting.poll_interval_seconds }}" not in body
+
+
+@pytest.mark.django_db
 def test_dashboard_guides_verified_user_to_new_task(client, verified_smtp):
     """Hiding the next step after mail verification would break the local setup flow."""
     body = client.get(reverse("core:dashboard")).content.decode()
