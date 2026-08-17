@@ -5,6 +5,7 @@ from django.utils import timezone
 
 MIGRATION_0004 = ("core", "0004_switch_notifications_to_agent_mail")
 MIGRATION_0005 = ("core", "0005_server_runtime_fields")
+MIGRATION_0006 = ("core", "0006_terminal_failure_streak")
 
 
 @pytest.mark.django_db(transaction=True)
@@ -37,6 +38,41 @@ def test_0005_copies_poll_interval_and_resets_fixed_mail_recipient():
     assert config.recipient_email == "850634546@qq.com"
     assert config.is_verified is False
     assert config.verified_at is None
+
+    restore_executor = MigrationExecutor(connection)
+    restore_executor.migrate(restore_executor.loader.graph.leaf_nodes())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_0006_initializes_existing_task_terminal_failure_streak():
+    executor = MigrationExecutor(connection)
+    assert MIGRATION_0006 in executor.loader.graph.nodes
+    executor.migrate([MIGRATION_0005])
+    old_apps = executor.loader.project_state([MIGRATION_0005]).apps
+    OldMonitorTask = old_apps.get_model("core", "MonitorTask")
+    OldMonitorTask.objects.all().delete()
+    task = OldMonitorTask.objects.create(
+        source_url="https://www.maoyan.com/cinemas?movieId=1545360",
+        normalized_url="https://www.maoyan.com/cinemas?movieId=1545360",
+        query_key="maoyan:10:migration-terminal-streak",
+        city_id=10,
+        city_name="上海",
+        movie_id="1545360",
+        movie_name="奥德赛",
+        show_date=timezone.localdate(),
+        cinema_name="测试影院",
+        normalized_cinema_name="测试影院",
+        consecutive_failures=4,
+    )
+
+    executor = MigrationExecutor(connection)
+    executor.migrate([MIGRATION_0006])
+    new_apps = executor.loader.project_state([MIGRATION_0006]).apps
+    NewMonitorTask = new_apps.get_model("core", "MonitorTask")
+
+    migrated = NewMonitorTask.objects.get(pk=task.pk)
+    assert migrated.consecutive_failures == 4
+    assert migrated.consecutive_terminal_failures == 0
 
     restore_executor = MigrationExecutor(connection)
     restore_executor.migrate(restore_executor.loader.graph.leaf_nodes())

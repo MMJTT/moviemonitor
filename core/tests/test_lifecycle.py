@@ -97,6 +97,7 @@ def test_resume_resets_failures_schedules_now_and_wakes(
     task = task_factory(
         status=starting_status,
         consecutive_failures=5,
+        consecutive_terminal_failures=5,
         last_error="old sanitized error",
         next_check_at=None,
         claim_token=uuid.uuid4(),
@@ -113,6 +114,7 @@ def test_resume_resets_failures_schedules_now_and_wakes(
     assert response.status_code == 302
     assert task.status == MonitorTask.Status.MONITORING
     assert task.consecutive_failures == 0
+    assert task.consecutive_terminal_failures == 0
     assert task.last_error == ""
     assert task.next_check_at == now
     assert task.claim_token is None

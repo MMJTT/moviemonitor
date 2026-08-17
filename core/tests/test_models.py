@@ -65,6 +65,7 @@ def test_runtime_fields_and_notification_choices_are_available():
 
     assert task.claim_token is None
     assert task.claim_expires_at is None
+    assert task.consecutive_terminal_failures == 0
     assert Notification.Type.SYSTEM_ALERT == "SYSTEM_ALERT"
     assert Notification.Status.NEEDS_REVIEW == "NEEDS_REVIEW"
 

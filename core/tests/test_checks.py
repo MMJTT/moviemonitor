@@ -90,9 +90,8 @@ def test_correct_claim_token_is_cleared_after_check(
     active_task.claim_expires_at = timezone.now() + timedelta(minutes=5)
     if outcome == "terminal-failure":
         active_task.consecutive_failures = 4
-    active_task.save(
-        update_fields=["claim_token", "claim_expires_at", "consecutive_failures"]
-    )
+        active_task.consecutive_terminal_failures = 4
+    active_task.save()
     if outcome.endswith("failure"):
         mocker.patch(
             "core.services.tasks.MaoyanAdapter.fetch",
@@ -148,6 +147,7 @@ def test_near_name_does_not_detect(active_task, mocker):
     now = timezone.now()
     AppSetting.objects.create(urgent_interval_seconds=180)
     active_task.consecutive_failures = 2
+    active_task.consecutive_terminal_failures = 2
     active_task.last_error = "old-local-error"
     active_task.save()
     mocker.patch(
@@ -163,6 +163,7 @@ def test_near_name_does_not_detect(active_task, mocker):
     assert check.cinema_count == 1
     assert active_task.status == MonitorTask.Status.MONITORING
     assert active_task.consecutive_failures == 0
+    assert active_task.consecutive_terminal_failures == 0
     assert active_task.last_error == ""
     assert active_task.next_check_at == now + timedelta(seconds=180)
     assert not Notification.objects.exists()
@@ -389,6 +390,7 @@ def test_fifth_structure_or_config_failure_creates_one_system_alert(
 ):
     """Missing or duplicating the terminal alert would hide a stopped task."""
     active_task.consecutive_failures = 4
+    active_task.consecutive_terminal_failures = 4
     active_task.save()
     mocker.patch(
         "core.services.tasks.MaoyanAdapter.fetch",
@@ -403,6 +405,7 @@ def test_fifth_structure_or_config_failure_creates_one_system_alert(
     assert first.status == expected_check_status
     assert active_task.status == MonitorTask.Status.ERROR
     assert active_task.consecutive_failures == 5
+    assert active_task.consecutive_terminal_failures == 5
     assert active_task.next_check_at is None
     alert = Notification.objects.get(
         task=active_task, notification_type=Notification.Type.SYSTEM_ALERT
@@ -428,6 +431,7 @@ def test_config_error_before_fifth_failure_retries_without_system_alert(
     assert check.status == CheckRun.Status.CONFIG_ERROR
     assert active_task.status == MonitorTask.Status.MONITORING
     assert active_task.consecutive_failures == 1
+    assert active_task.consecutive_terminal_failures == 1
     assert active_task.next_check_at == now + timedelta(seconds=120)
     assert not active_task.notifications.filter(
         notification_type=Notification.Type.SYSTEM_ALERT
@@ -448,7 +452,8 @@ def test_fifth_temporary_or_rate_failure_keeps_retrying_without_system_alert(
     """Applying the terminal threshold to retryable failures would stop monitoring."""
     now = timezone.now()
     active_task.consecutive_failures = 4
-    active_task.save(update_fields=["consecutive_failures"])
+    active_task.consecutive_terminal_failures = 4
+    active_task.save()
     mocker.patch("core.services.tasks.MaoyanAdapter.fetch", side_effect=error)
 
     perform_check(active_task.pk, now=now)
@@ -456,6 +461,7 @@ def test_fifth_temporary_or_rate_failure_keeps_retrying_without_system_alert(
     active_task.refresh_from_db()
     assert active_task.status == MonitorTask.Status.MONITORING
     assert active_task.consecutive_failures == 5
+    assert active_task.consecutive_terminal_failures == 0
     assert active_task.next_check_at == now + timedelta(seconds=3600)
     assert active_task.claim_token is None
     assert active_task.claim_expires_at is None
@@ -470,7 +476,8 @@ def test_resuming_error_task_does_not_create_second_system_alert(
 ):
     """A second terminal episode must preserve the task's single alert fact."""
     active_task.consecutive_failures = 4
-    active_task.save(update_fields=["consecutive_failures"])
+    active_task.consecutive_terminal_failures = 4
+    active_task.save()
     mocker.patch(
         "core.services.tasks.MaoyanAdapter.fetch",
         side_effect=PageStructureError("untrusted response body"),
@@ -485,7 +492,8 @@ def test_resuming_error_task_does_not_create_second_system_alert(
     response = client.post(reverse("core:task-resume", args=[active_task.pk]))
     active_task.refresh_from_db()
     active_task.consecutive_failures = 4
-    active_task.save(update_fields=["consecutive_failures"])
+    active_task.consecutive_terminal_failures = 4
+    active_task.save()
     perform_check(active_task.pk)
 
     alert.refresh_from_db()
@@ -494,3 +502,69 @@ def test_resuming_error_task_does_not_create_second_system_alert(
         notification_type=Notification.Type.SYSTEM_ALERT
     ).count() == 1
     assert alert.status == Notification.Status.SENT
+
+
+@pytest.mark.django_db
+def test_temporary_failures_do_not_advance_terminal_error_streak(active_task, mocker):
+    """Four retryable failures must not make the next structure error terminal."""
+    mocker.patch(
+        "core.services.tasks.MaoyanAdapter.fetch",
+        side_effect=[
+            TemporaryPlatformError("private temporary detail"),
+            TemporaryPlatformError("private temporary detail"),
+            TemporaryPlatformError("private temporary detail"),
+            TemporaryPlatformError("private temporary detail"),
+            PageStructureError("private structure detail"),
+        ],
+    )
+
+    for _ in range(5):
+        perform_check(active_task.pk)
+
+    active_task.refresh_from_db()
+    assert active_task.status == MonitorTask.Status.MONITORING
+    assert active_task.consecutive_failures == 5
+    assert active_task.consecutive_terminal_failures == 1
+    assert not active_task.notifications.filter(
+        notification_type=Notification.Type.SYSTEM_ALERT
+    ).exists()
+
+
+@pytest.mark.django_db
+def test_retryable_failure_resets_streak_before_five_mixed_terminal_errors(
+    active_task, mocker
+):
+    """A retryable interruption must restart the five-terminal-error threshold."""
+    mocker.patch(
+        "core.services.tasks.MaoyanAdapter.fetch",
+        side_effect=[
+            PageStructureError("private structure detail"),
+            PageStructureError("private structure detail"),
+            PageStructureError("private structure detail"),
+            PageStructureError("private structure detail"),
+            TemporaryPlatformError("private temporary detail"),
+            PageStructureError("private structure detail"),
+            TargetValidationError("private config detail"),
+            PageStructureError("private structure detail"),
+            TargetValidationError("private config detail"),
+            PageStructureError("private structure detail"),
+        ],
+    )
+
+    for _ in range(5):
+        perform_check(active_task.pk)
+    active_task.refresh_from_db()
+    assert active_task.status == MonitorTask.Status.MONITORING
+    assert active_task.consecutive_failures == 5
+    assert active_task.consecutive_terminal_failures == 0
+
+    for _ in range(5):
+        perform_check(active_task.pk)
+
+    active_task.refresh_from_db()
+    assert active_task.status == MonitorTask.Status.ERROR
+    assert active_task.consecutive_failures == 10
+    assert active_task.consecutive_terminal_failures == 5
+    assert active_task.notifications.filter(
+        notification_type=Notification.Type.SYSTEM_ALERT
+    ).count() == 1

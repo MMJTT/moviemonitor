@@ -272,6 +272,7 @@ def task_resume(request, task_id):
             return _transition_conflict()
         task.status = MonitorTask.Status.MONITORING
         task.consecutive_failures = 0
+        task.consecutive_terminal_failures = 0
         task.last_error = ""
         task.next_check_at = timezone.now()
         task.claim_token = None
@@ -280,6 +281,7 @@ def task_resume(request, task_id):
             update_fields=[
                 "status",
                 "consecutive_failures",
+                "consecutive_terminal_failures",
                 "last_error",
                 "next_check_at",
                 "claim_token",

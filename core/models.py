@@ -84,6 +84,7 @@ class MonitorTask(models.Model):
     booking_url = models.URLField(max_length=1000, blank=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.MONITORING)
     consecutive_failures = models.PositiveSmallIntegerField(default=0)
+    consecutive_terminal_failures = models.PositiveSmallIntegerField(default=0)
     last_error = models.CharField(max_length=200, blank=True)
     last_checked_at = models.DateTimeField(null=True, blank=True)
     next_check_at = models.DateTimeField(null=True, blank=True, db_index=True)

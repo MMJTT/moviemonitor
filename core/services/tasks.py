@@ -333,13 +333,16 @@ def perform_check(task_id, now=None, claim_token=None):
             )
             failure_count = current.consecutive_failures + 1
             current.consecutive_failures = failure_count
+            if check_status in TERMINAL_CHECK_STATUSES:
+                terminal_failure_count = current.consecutive_terminal_failures + 1
+            else:
+                terminal_failure_count = 0
+            current.consecutive_terminal_failures = terminal_failure_count
             current.last_error = error_summary
             current.last_checked_at = now
             current.claim_token = None
             current.claim_expires_at = None
-            terminal_failure = (
-                check_status in TERMINAL_CHECK_STATUSES and failure_count >= 5
-            )
+            terminal_failure = terminal_failure_count >= 5
             if terminal_failure:
                 current.status = MonitorTask.Status.ERROR
                 current.next_check_at = None
@@ -354,6 +357,7 @@ def perform_check(task_id, now=None, claim_token=None):
             current.save(
                 update_fields=[
                     "consecutive_failures",
+                    "consecutive_terminal_failures",
                     "last_error",
                     "last_checked_at",
                     "next_check_at",
@@ -380,6 +384,7 @@ def perform_check(task_id, now=None, claim_token=None):
             cinema_count=len(result.cinemas),
         )
         current.consecutive_failures = 0
+        current.consecutive_terminal_failures = 0
         current.last_error = ""
         current.last_checked_at = now
         current.claim_token = None
@@ -406,6 +411,7 @@ def perform_check(task_id, now=None, claim_token=None):
                     "detected_at",
                     "next_check_at",
                     "consecutive_failures",
+                    "consecutive_terminal_failures",
                     "last_error",
                     "last_checked_at",
                     "claim_token",
@@ -429,6 +435,7 @@ def perform_check(task_id, now=None, claim_token=None):
             current.save(
                 update_fields=[
                     "consecutive_failures",
+                    "consecutive_terminal_failures",
                     "last_error",
                     "last_checked_at",
                     "next_check_at",
