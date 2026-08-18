@@ -2,6 +2,8 @@
 
 {% block title %}邮件设置 · TicketWatch{% endblock %}
 
+{% block extra_head %}{% if config.verification_status == "PENDING" %}<meta http-equiv="refresh" content="2">{% endif %}{% endblock %}
+
 {% block content %}
   <header class="page-heading split-heading">
     <div>
@@ -15,20 +17,27 @@
       <div class="mail-stamp" aria-hidden="true">AGENT</div>
       <strong>固定邮件地址</strong>
       <dl><div><dt>发件人</dt><dd><code>{{ config.sender_email }}</code></dd></div><div><dt>收件人</dt><dd><code>{{ config.recipient_email }}</code></dd></div><div><dt>传输</dt><dd>Agent Mail CLI</dd></div></dl>
-      <p>授权保存在本机 macOS 钥匙串中，程序不会保存邮箱密码或 OAuth Token。</p>
+      <p>凭据仅保存在服务器 Worker 的钥匙串中；Web 不读取邮箱密码或 OAuth Token。</p>
     </aside>
     <div class="form-card">
-      {% if config.is_verified %}
-        <p class="notice notice-success">Agent Mail 已验证，可以发送监控提醒。</p>
-      {% elif config.last_error == "agent-mail-auth-required" %}
-        <p class="notice notice-error" role="alert">Agent Mail 需要重新授权，请运行 <code>agently-cli auth login</code>。</p>
-      {% else %}
-        <p class="notice notice-warning">Agent Mail 尚未验证。</p>
+      {% if runtime_status.worker.status != "ok" %}
+        <p class="notice notice-warning">后台 Worker 暂不可用，请恢复服务后再请求验证。</p>
       {% endif %}
-      {% if config.last_error and config.last_error != "agent-mail-auth-required" %}<p class="notice notice-error" role="alert">{{ config.last_error }}</p>{% endif %}
+      {% if config.verification_status == "PENDING" %}
+        <p class="notice notice-warning">等待后台 Worker 验证，页面将在两秒后自动刷新。</p>
+      {% elif config.verification_status == "VERIFIED" and config.is_verified %}
+        <p class="notice notice-success">Worker 已确认固定邮箱身份。最近验证时间：{{ config.verified_at|date:"Y年m月d日 H:i" }}。</p>
+      {% else %}
+        <p class="notice notice-error" role="alert">验证失败：{{ config.last_error|default:"agent-mail-unverified" }}。</p>
+        <p>如凭据已失效，请在服务器 Worker 环境完成 Agent Mail 设备登录后重新验证。</p>
+      {% endif %}
       <form method="post" action="{% url 'core:mail-test' %}">
         {% csrf_token %}
-        <button class="button-primary" type="submit">发送测试邮件</button>
+        {% if config.verification_status == "PENDING" %}
+          <button class="button-primary" type="submit" disabled>等待 Worker 验证</button>
+        {% else %}
+          <button class="button-primary" type="submit">重新验证并发送测试邮件</button>
+        {% endif %}
       </form>
     </div>
   </section>

@@ -3,7 +3,7 @@ from datetime import timedelta
 import pytest
 from django.utils import timezone
 
-from core.models import AgentMailConfig, MonitorTask, Notification
+from core.models import AgentMailConfig, MonitorTask, Notification, RuntimeState
 from core.services.tasks import PreviewCinema, TaskPreviewPayload, sign_preview
 
 
@@ -31,14 +31,17 @@ def task_factory(db):
 
 
 @pytest.fixture
-def verified_smtp(db, mocker):
+def verified_smtp(db):
     """Compatibility name for tests that only need verified mail delivery."""
     config = AgentMailConfig.get_solo()
-    config.recipient_email = "receiver@example.com"
     config.is_verified = True
     config.verified_at = timezone.now()
+    config.verification_status = AgentMailConfig.VerificationStatus.VERIFIED
     config.save()
-    mocker.patch("core.services.tasks.verify_agent_mail", return_value=config.sender_email)
+    RuntimeState.objects.update_or_create(
+        pk=1,
+        defaults={"worker_heartbeat_at": timezone.now()},
+    )
     return config
 
 

@@ -9,8 +9,16 @@ from django.utils import timezone
 from freezegun import freeze_time
 
 from core.adapters.base import CheckResult, ParsedTarget, TemporaryPlatformError
-from core.models import AgentMailConfig, AppSetting, CheckRun, MonitorTask, Notification
+from core.models import (
+    AgentMailConfig,
+    AppSetting,
+    CheckRun,
+    MonitorTask,
+    Notification,
+    RuntimeState,
+)
 from core.scheduler import run_due_work, set_process_scheduler
+from core.services.mail_verification import process_mail_verification
 from core.services.tasks import perform_check
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "maoyan"
@@ -77,13 +85,16 @@ def active_task(task_factory):
 
 
 @pytest.fixture
-def verified_smtp(db, mocker):
+def verified_smtp(db):
     config = AgentMailConfig.get_solo()
-    config.recipient_email = "receiver@example.com"
     config.is_verified = True
     config.verified_at = timezone.now()
+    config.verification_status = AgentMailConfig.VerificationStatus.VERIFIED
     config.save()
-    mocker.patch("core.services.tasks.verify_agent_mail", return_value=config.sender_email)
+    RuntimeState.objects.update_or_create(
+        pk=1,
+        defaults={"worker_heartbeat_at": timezone.now()},
+    )
     return config
 
 
@@ -496,8 +507,10 @@ def test_mocked_local_flow_sends_one_opening_mail_and_completes(
     client, mocker, django_capture_on_commit_callbacks
 ):
     """Breaking any closed-loop boundary must stop completion or duplicate the opening mail."""
-    test_mail = mocker.patch("core.views.test_agent_mail_config", return_value="queued")
-    mocker.patch("core.services.tasks.verify_agent_mail", return_value="mijiatong@agent.qq.com")
+    test_mail = mocker.patch(
+        "core.services.mail_verification.test_agent_mail_config",
+        return_value="queued",
+    )
     send_mail = mocker.patch(
         "core.services.notifications.send_agent_mail", return_value="queued"
     )
@@ -525,8 +538,18 @@ def test_mocked_local_flow_sends_one_opening_mail_and_completes(
 
     config = AgentMailConfig.get_solo()
     assert mail_response.status_code == 200
+    assert config.verification_status == AgentMailConfig.VerificationStatus.PENDING
+    assert config.verification_requested_at is not None
+
+    assert process_mail_verification(now=timezone.now()) is True
+    RuntimeState.objects.update_or_create(
+        pk=1,
+        defaults={"worker_heartbeat_at": timezone.now()},
+    )
+    config.refresh_from_db()
     assert config.is_verified is True
-    test_mail.assert_called_once_with(config)
+    assert config.verification_status == AgentMailConfig.VerificationStatus.VERIFIED
+    test_mail.assert_called_once()
 
     preview = client.post(
         reverse("core:task-preview"),

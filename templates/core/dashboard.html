@@ -31,7 +31,7 @@
       <div class="notice-copy">
         <p class="eyebrow">Step 01</p>
         <h2 id="mail-needed">先验证 Agent Mail</h2>
-        <p>任务只能在测试邮件成功后创建。发件邮箱固定为 mijiatong@agent.qq.com，不需要个人邮箱授权码。</p>
+        <p>任务只能在后台 Worker 确认固定邮箱身份后创建。Web 不接触 Agent Mail 凭据，也不需要个人邮箱授权码。</p>
       </div>
       <a class="button button-primary" href="{% url 'core:mail-edit' %}">设置邮件</a>
     </section>

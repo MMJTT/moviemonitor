@@ -10,6 +10,7 @@
     <title>{% block title %}TicketWatch{% endblock %}</title>
     <link rel="icon" href="{% static 'favicon.svg' %}" type="image/svg+xml">
     <link rel="stylesheet" href="{% static 'css/app.css' %}">
+    {% block extra_head %}{% endblock %}
   </head>
   <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>

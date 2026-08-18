@@ -16,7 +16,7 @@ from core.forms import (
 )
 from core.models import AgentMailConfig, AppSetting, MonitorTask, Notification
 from core.scheduler import wake_scheduler
-from core.services.agent_mail import AgentMailError, test_agent_mail_config
+from core.services.mail_verification import request_mail_verification
 from core.services.runtime_health import collect_runtime_status
 from core.services.scheduling import next_check_at_for
 from core.services.tasks import (
@@ -62,69 +62,22 @@ def dashboard(request):
     )
 
 
-def _mark_agent_mail_verified(config):
-    now = timezone.now()
-    with transaction.atomic():
-        updated = AgentMailConfig.objects.filter(
-            pk=config.pk,
-            recipient_email=config.recipient_email,
-            updated_at=config.updated_at,
-        ).update(
-            is_verified=True,
-            verified_at=now,
-            last_error="",
-            updated_at=now,
-        )
-        if updated != 1:
-            return False
-        Notification.objects.filter(status=Notification.Status.PENDING).update(
-            next_attempt_at=now,
-            updated_at=now,
-        )
-        transaction.on_commit(wake_scheduler)
-    return True
-
-
-def _mark_agent_mail_failed(config, error):
-    now = timezone.now()
-    return (
-        AgentMailConfig.objects.filter(
-            pk=config.pk,
-            recipient_email=config.recipient_email,
-            updated_at=config.updated_at,
-        ).update(
-            is_verified=False,
-            verified_at=None,
-            last_error=error,
-            updated_at=now,
-        )
-        == 1
-    )
-
-
-def _begin_agent_mail_test(config):
-    config.is_verified = False
-    config.verified_at = None
-    config.last_error = ""
-    config.save()
-    return config
-
-
 @require_http_methods(["GET"])
 def mail_edit(request):
     config = AgentMailConfig.get_solo()
-    return render(request, "core/mail_form.html", {"config": config})
+    return render(
+        request,
+        "core/mail_form.html",
+        {
+            "config": config,
+            "runtime_status": collect_runtime_status(),
+        },
+    )
 
 
 @require_POST
 def mail_test(request):
-    config = _begin_agent_mail_test(AgentMailConfig.get_solo())
-    try:
-        test_agent_mail_config(config)
-    except AgentMailError as exc:
-        _mark_agent_mail_failed(config, str(exc))
-    else:
-        _mark_agent_mail_verified(config)
+    request_mail_verification()
     return redirect("core:mail-edit")
 
 

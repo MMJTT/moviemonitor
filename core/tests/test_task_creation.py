@@ -1,13 +1,13 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from django.core import signing
 from django.urls import reverse
+from django.utils import timezone
 from freezegun import freeze_time
 
 from core.adapters.base import CheckResult, CinemaAvailability, ParsedTarget
-from core.models import MonitorTask
-from core.services.agent_mail import AgentMailAuthError
+from core.models import AgentMailConfig, MonitorTask, RuntimeState
 from core.services.tasks import PreviewCinema, TaskPreviewPayload, sign_preview, unsign_preview
 
 VALID_URL = "https://www.maoyan.com/cinemas?movieId=1545360&showDate=2026-08-20"
@@ -34,13 +34,83 @@ def test_preview_requires_verified_smtp(client):
     assert response.status_code == 403
 
 
-@pytest.mark.django_db
-def test_confirm_rechecks_agent_mail_identity_and_disables_stale_verification(
+@pytest.mark.django_db(transaction=True)
+def test_confirm_uses_fresh_worker_attestation_without_agent_mail_cli(
     client, verified_smtp, mocker
 ):
     mocker.patch(
-        "core.services.tasks.verify_agent_mail",
-        side_effect=AgentMailAuthError("agent-mail-auth-required"),
+        "core.services.agent_mail._run",
+        side_effect=AssertionError("Web must not execute Agent Mail CLI"),
+    )
+    check_now = mocker.patch("core.services.tasks.enqueue_immediate_check")
+
+    response = client.post(
+        reverse("core:task-confirm"),
+        {
+            "signed_preview": sign_preview(preview_payload()),
+            "manual_cinema_name": "目标影院",
+        },
+    )
+
+    assert response.status_code == 302
+    task = MonitorTask.objects.get()
+    check_now.assert_called_once_with(task.pk)
+
+
+@pytest.mark.django_db
+def test_confirm_rejects_stale_attestation_and_requests_worker_verification_once(
+    client, verified_smtp, mocker, settings
+):
+    verified_smtp.verified_at = timezone.now() - timedelta(
+        seconds=settings.AGENT_MAIL_ATTESTATION_TTL_SECONDS + 1
+    )
+    verified_smtp.save(update_fields=["verified_at", "updated_at"])
+    request_verification = mocker.patch(
+        "core.services.tasks.request_mail_verification",
+        create=True,
+    )
+
+    response = client.post(
+        reverse("core:task-confirm"),
+        {
+            "signed_preview": sign_preview(preview_payload()),
+            "manual_cinema_name": "目标影院",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "邮箱验证已过期" in response.content.decode()
+    request_verification.assert_called_once_with()
+    assert MonitorTask.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_confirm_rejects_unverified_mail_without_agent_mail_cli(client, mocker):
+    mocker.patch(
+        "core.services.agent_mail._run",
+        side_effect=AssertionError("Web must not execute Agent Mail CLI"),
+    )
+    RuntimeState.objects.create(worker_heartbeat_at=timezone.now())
+
+    response = client.post(
+        reverse("core:task-confirm"),
+        {
+            "signed_preview": sign_preview(preview_payload()),
+            "manual_cinema_name": "目标影院",
+        },
+    )
+
+    assert response.status_code == 403
+    assert MonitorTask.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_confirm_reports_stale_worker_without_clearing_mail_verification(
+    client, verified_smtp
+):
+    RuntimeState.objects.update_or_create(
+        pk=1,
+        defaults={"worker_heartbeat_at": timezone.now() - timedelta(minutes=5)},
     )
 
     response = client.post(
@@ -53,9 +123,29 @@ def test_confirm_rechecks_agent_mail_identity_and_disables_stale_verification(
 
     verified_smtp.refresh_from_db()
     assert response.status_code == 400
-    assert "邮件设置重新授权" in response.content.decode()
-    assert verified_smtp.is_verified is False
-    assert verified_smtp.last_error == "agent-mail-auth-required"
+    assert "后台 Worker 暂不可用" in response.content.decode()
+    assert verified_smtp.is_verified is True
+    assert verified_smtp.verification_status == AgentMailConfig.VerificationStatus.VERIFIED
+    assert MonitorTask.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_confirm_rejects_fixed_address_mismatch_without_creating_task(
+    client, verified_smtp
+):
+    verified_smtp.sender_email = "different@agent.qq.com"
+    verified_smtp.save(update_fields=["sender_email", "updated_at"])
+
+    response = client.post(
+        reverse("core:task-confirm"),
+        {
+            "signed_preview": sign_preview(preview_payload()),
+            "manual_cinema_name": "目标影院",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "固定邮件地址配置不匹配" in response.content.decode()
     assert MonitorTask.objects.count() == 0
 
 
@@ -84,6 +174,10 @@ def test_preview_rejects_malformed_bracketed_authority_without_a_server_error(
 def test_preview_fetches_validated_target_and_signs_server_derived_values(
     client, verified_smtp, mocker
 ):
+    mocker.patch(
+        "core.services.agent_mail._run",
+        side_effect=AssertionError("Web must not execute Agent Mail CLI"),
+    )
     target = ParsedTarget(
         platform="maoyan",
         city_id=10,

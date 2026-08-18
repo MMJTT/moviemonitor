@@ -15,9 +15,10 @@ from core.adapters.base import (
     TemporaryPlatformError,
 )
 from core.adapters.maoyan import MaoyanAdapter, normalize_cinema_name
-from core.models import AgentMailConfig, AppSetting, CheckRun, MonitorTask, Notification
-from core.services.agent_mail import AgentMailError, verify_agent_mail
+from core.models import AppSetting, CheckRun, MonitorTask, Notification
 from core.services.leases import StaleTaskClaim, claim_matches
+from core.services.mail_readiness import mail_readiness
+from core.services.mail_verification import request_mail_verification
 from core.services.scheduling import interval_seconds_for
 
 PREVIEW_SALT = "local-task-preview"
@@ -121,20 +122,6 @@ def _payload_from_signed_preview(value: str) -> TaskPreviewPayload:
 
 
 def create_task(signed_preview: str, cinema_id: str, manual_name: str) -> MonitorTask:
-    config = AgentMailConfig.get_solo()
-    if not config.is_verified:
-        raise TaskCreationError("请先验证 Agent Mail 配置。")
-    try:
-        verify_agent_mail()
-    except AgentMailError as exc:
-        AgentMailConfig.objects.filter(pk=config.pk).update(
-            is_verified=False,
-            verified_at=None,
-            last_error=str(exc),
-            updated_at=timezone.now(),
-        )
-        raise TaskCreationError("Agent Mail 当前无法验证，请到邮件设置重新授权并测试。") from exc
-
     payload = _payload_from_signed_preview(signed_preview)
     if date.fromisoformat(payload.show_date) < timezone.localdate():
         raise TaskCreationError("预览日期已过，请重新预览。")
@@ -153,6 +140,19 @@ def create_task(signed_preview: str, cinema_id: str, manual_name: str) -> Monito
     else:
         cinema_name = manual_name
         cinema_id = ""
+
+    readiness = mail_readiness()
+    if not readiness.ready:
+        if readiness.code == "mail-attestation-stale":
+            request_mail_verification()
+            message = "邮箱验证已过期，后台正在重新验证，请稍后重试。"
+        elif readiness.code == "worker-stale":
+            message = "后台 Worker 暂不可用，请恢复服务后重试。"
+        elif readiness.code == "mail-address-mismatch":
+            message = "固定邮件地址配置不匹配，请检查服务器配置。"
+        else:
+            message = "请先验证 Agent Mail 配置。"
+        raise TaskCreationError(message)
 
     try:
         with transaction.atomic():
