@@ -22,7 +22,7 @@ docker compose version
 
 ## 从本机导出 SQLite
 
-先在运行 `runlocal` 的终端按 `Ctrl-C`，确认没有第二个 `runlocal` 进程；直到迁移验收完成前不要向本地应用写新数据。按固定顺序执行：先复制 SQLite 原件，再将本地 schema 迁移到含 `RuntimeState` 的 `0007_runtime_state`，然后导出业务数据。
+先在运行 `runlocal` 的终端按 `Ctrl-C`，确认没有第二个 `runlocal` 进程；直到迁移验收完成前不要向本地应用写新数据。按固定顺序执行：先复制 SQLite 原件，再将本地 schema 迁移到含 Worker 邮件验证状态的 `core.0008_agent_mail_verification_state`，然后导出业务数据。
 
 在 **Mac 本机仓库** 执行：
 
@@ -132,12 +132,12 @@ sudo chown admin:admin local.manifest.json SHA256SUMS
 sudo chmod 0600 local.manifest.json SHA256SUMS
 ```
 
-严格按此顺序启动。`loaddata` 通过标准输入从只读临时 bind mount 读取，避免在 `0751` 暂存目录中枚举文件；在 manifest 逐字一致前不要启动 Worker。
+严格按此顺序启动。`loaddata` 通过标准输入从只读临时 bind mount 读取，避免在 `0751` 暂存目录中枚举文件；在 manifest 逐字一致前不要启动 Worker。Web 不挂载 `/opt/ticketwatch/data/agently` 或 `/home/ticketwatch`，Web 容器绝不运行 `agently-cli`；只有 Worker 挂载 Linux keyring 和 Agent Mail 数据目录。
 
 ```bash
 cd /opt/ticketwatch/app
 docker compose --env-file /opt/ticketwatch/.env build web worker
-docker compose --env-file /opt/ticketwatch/.env up -d postgres redis
+docker compose --env-file /opt/ticketwatch/.env up -d --wait postgres redis
 docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web python manage.py migrate
 docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps --volume /opt/ticketwatch/migration-data:/migration:ro web sh -ec 'python manage.py loaddata --format=json - < /migration/core-data.json'
 docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web sh -ec 'python manage.py data_manifest --output /tmp/server.manifest.json >/dev/null && cat /tmp/server.manifest.json' > /opt/ticketwatch/migration-data/server.manifest.json
@@ -156,7 +156,7 @@ curl --fail http://127.0.0.1:8000/statusz
 ss -lntp
 ```
 
-若 `cmp` 失败，保留两个 manifest、停止 Worker 并调查各业务模型摘要；不要向已填充的数据库再跑 `loaddata`。`showmigrations` 必须显示 `[X] 0007_runtime_state`。Agent Mail 登录是 Worker Linux/keyring 中的交互设备授权；不得把长期明文访问令牌写入 `.env`。预检会发真实测试邮件。授权后确认凭据跨重启保存：
+若 `cmp` 失败，保留两个 manifest、停止 Worker 并调查各业务模型摘要；不要向已填充的数据库再跑 `loaddata`。`showmigrations` 必须显示 `[X] 0008_agent_mail_verification_state`。Agent Mail 登录是 Worker Linux/keyring 中的交互设备授权；不得把长期明文访问令牌写入 `.env`。预检会发真实测试邮件。授权后确认凭据跨重启保存：
 
 ```bash
 docker compose --env-file /opt/ticketwatch/.env run --rm worker agently-cli +me
@@ -165,6 +165,10 @@ docker compose --env-file /opt/ticketwatch/.env run --rm worker agently-cli +me
 ```
 
 若身份不正确或凭据不能跨重启，保持 Worker 停止并回到设计评审。
+
+Worker 启动时先执行一次身份验证并写入有时效的验证证明，随后继续按六小时周期复验；Web 只读取 PostgreSQL 中的新鲜证明和 Worker 心跳。邮件设置页的验证按钮只把 Worker 请求持久化到 PostgreSQL，Redis 唤醒只是加速手段，失败时请求仍由 Worker 后续扫描领取。邮件验证失败不会停止电影检查，但新任务会在证明失效或 Worker 心跳过期时失败关闭；发送每封通知前仍由 Worker 实时确认身份。
+
+最终验收不要用 Django shell 或直接写表绕过业务校验。必须通过生产 Web 页面和服务路径创建最终验收任务，并依次确认：Web 镜像中 `command -v agently-cli` 返回非零；邮件设置页的后台请求由 Worker 完成；新鲜证明和健康心跳允许创建任务；证明过期会留下一个持久化的重新验证请求；任务随后由 Worker 检查并按现有去重规则通知。
 
 ## 通过 SSH 隧道访问
 
@@ -246,7 +250,7 @@ git fetch --tags origin
 git checkout --detach "$NEW_SHA"
 test "$(git rev-parse HEAD)" = "$NEW_SHA"
 docker compose --env-file /opt/ticketwatch/.env build web worker
-docker compose --env-file /opt/ticketwatch/.env up -d postgres redis
+docker compose --env-file /opt/ticketwatch/.env up -d --wait postgres redis
 docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web python manage.py migrate
 docker compose --env-file /opt/ticketwatch/.env up -d --no-deps web
 curl --fail http://127.0.0.1:8000/healthz
@@ -357,4 +361,4 @@ docker compose --env-file /opt/ticketwatch/.env up -d --no-build --no-deps web w
 curl --fail http://127.0.0.1:8000/statusz
 ```
 
-恢复后核对业务表数量、活动任务及 `next_check_at`、通知唯一性、`0007_runtime_state` 和私有 UI。保留故障现场备份、恢复记录和本地 SQLite 原件。迁移 JSON/manifests 是明确临时目标；仅在验收后，以指定文件的方式清理，绝不对广泛路径执行删除。
+恢复后核对业务表数量、活动任务及 `next_check_at`、通知唯一性、`0008_agent_mail_verification_state` 和私有 UI。保留故障现场备份、恢复记录和本地 SQLite 原件。迁移 JSON/manifests 是明确临时目标；仅在验收后，以指定文件的方式清理，绝不对广泛路径执行删除。

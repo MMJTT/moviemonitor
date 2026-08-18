@@ -46,12 +46,24 @@ def test_compose_has_exactly_four_production_services(compose_config):
     assert set(compose_config["services"]) == {"web", "worker", "postgres", "redis"}
 
 
-def test_worker_agent_mail_home_requires_preprovisioned_bind(compose_config):
-    worker_volumes = compose_config["services"]["worker"]["volumes"]
-    agent_mail_home = next(
-        volume for volume in worker_volumes if volume["target"] == "/home/ticketwatch"
+def test_web_has_no_agent_mail_home_or_credentials_mount(compose_config):
+    web_volumes = compose_config["services"]["web"].get("volumes", [])
+
+    assert all(volume["target"] != "/home/ticketwatch" for volume in web_volumes)
+    assert all(
+        volume.get("source") != "/tmp/ticketwatch-contract-agently"
+        for volume in web_volumes
     )
 
+
+def test_worker_agent_mail_home_requires_preprovisioned_bind(compose_config):
+    worker_volumes = compose_config["services"]["worker"]["volumes"]
+    agent_mail_homes = [
+        volume for volume in worker_volumes if volume["target"] == "/home/ticketwatch"
+    ]
+
+    assert len(agent_mail_homes) == 1
+    agent_mail_home = agent_mail_homes[0]
     assert agent_mail_home["type"] == "bind"
     assert agent_mail_home["source"] == "/tmp/ticketwatch-contract-agently"
     assert agent_mail_home["bind"]["create_host_path"] is False

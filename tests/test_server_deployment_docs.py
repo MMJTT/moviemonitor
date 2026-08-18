@@ -90,3 +90,24 @@ def test_weekly_mac_copy_checks_source_and_destination_hashes():
     assert "REMOTE_SHA=" in DOCUMENT
     assert "LOCAL_SHA=" in DOCUMENT
     assert 'test "$REMOTE_SHA" = "$LOCAL_SHA"' in DOCUMENT
+
+
+def test_worker_owned_mail_attestation_rollout_is_documented():
+    assert "core.0008_agent_mail_verification_state" in DOCUMENT
+    assert "Worker 启动时先执行一次身份验证并写入有时效的验证证明" in DOCUMENT
+    assert "Web 容器绝不运行 `agently-cli`" in DOCUMENT
+    assert "验证按钮只把 Worker 请求持久化到 PostgreSQL" in DOCUMENT
+    assert "邮件验证失败不会停止电影检查" in DOCUMENT
+    assert "必须通过生产 Web 页面和服务路径创建最终验收任务" in DOCUMENT
+
+
+def test_web_deployment_never_receives_agent_mail_credentials():
+    assert "Web 不挂载 `/opt/ticketwatch/data/agently` 或 `/home/ticketwatch`" in DOCUMENT
+    assert "web agently-cli" not in DOCUMENT
+    assert "--volume /opt/ticketwatch/data/agently:/home/ticketwatch" not in DOCUMENT
+
+
+def test_database_startup_waits_before_no_deps_migration():
+    assert DOCUMENT.count(
+        "docker compose --env-file /opt/ticketwatch/.env up -d --wait postgres redis"
+    ) == 2
