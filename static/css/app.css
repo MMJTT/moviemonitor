@@ -78,6 +78,8 @@ code { font-family: var(--font-mono); font-size: 0.92em; }
 .primary-nav a:hover, .primary-nav a:focus-visible { color: var(--header-ink); background: rgb(255 255 255 / 5%); }
 .primary-nav a[aria-current="page"] { color: var(--header-ink); }
 .primary-nav a[aria-current="page"]::after { background: var(--accent); }
+.nav-logout { display: grid; place-items: center; margin: 0 0 0 8px; }
+.nav-logout button { min-height: 38px; padding: 7px 12px; color: rgb(255 250 240 / 66%); border-color: rgb(255 250 240 / 24%); }
 
 .page-stack { display: grid; gap: 26px; padding-block: 48px 38px; }
 .page-stack:focus { outline: none; }
@@ -227,6 +229,13 @@ td { font-size: 0.9rem; }
 .site-footer p { margin: 0; }
 .local-indicator { display: inline-flex; align-items: center; gap: 8px; }
 .local-indicator i { width: 7px; height: 7px; background: var(--success); border-radius: 50%; }
+.auth-layout { min-height: 640px; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr); align-items: center; gap: clamp(36px, 8vw, 110px); }
+.auth-intro h1 em { color: var(--accent); font-style: normal; }
+.auth-intro > p:last-child { max-width: 620px; color: var(--ink-soft); font-size: 1.08rem; }
+.auth-card { box-shadow: var(--shadow); }
+.auth-note { margin: 24px 0 0; padding-top: 20px; border-top: 1px solid var(--line); }
+.invite-result { align-items: flex-start; }
+.invite-result code { display: block; margin-top: 12px; padding: 13px; background: var(--paper); border: 1px solid var(--line); overflow-wrap: anywhere; user-select: all; }
 
 @media (max-width: 860px) {
   .dashboard-hero { grid-template-columns: 1fr; align-items: start; }
@@ -234,7 +243,7 @@ td { font-size: 0.9rem; }
   .fact-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .fact-grid > div:nth-child(3) { border-left: 0; border-top: 1px solid var(--line); }
   .fact-grid > div:nth-child(4) { border-top: 1px solid var(--line); }
-  .split-heading, .form-layout, .form-layout-wide, .detail-grid { grid-template-columns: 1fr; }
+  .split-heading, .form-layout, .form-layout-wide, .detail-grid, .auth-layout { grid-template-columns: 1fr; }
   .form-context { position: static; }
   .steps-context ol { display: grid; grid-template-columns: repeat(3, 1fr); }
   .steps-context li { align-items: flex-start; border-right: 1px solid rgb(255 250 240 / 12%); border-bottom: 0; }

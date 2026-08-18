@@ -1,5 +1,6 @@
 import uuid
 
+from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import Q
@@ -100,6 +101,11 @@ class MonitorTask(models.Model):
         ERROR = "ERROR", "异常"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="monitor_tasks",
+    )
     source_url = models.URLField(max_length=1000)
     normalized_url = models.URLField(max_length=1000)
     query_key = models.CharField(max_length=128, db_index=True)
@@ -131,9 +137,15 @@ class MonitorTask(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=["city_id", "movie_id", "show_date", "normalized_cinema_name"],
+                fields=[
+                    "owner",
+                    "city_id",
+                    "movie_id",
+                    "show_date",
+                    "normalized_cinema_name",
+                ],
                 condition=Q(status__in=["MONITORING", "PAUSED", "DETECTED", "ERROR"]),
-                name="one_unfinished_task_per_target",
+                name="one_unfinished_task_per_user_target",
             )
         ]
 
@@ -198,3 +210,30 @@ class Notification(models.Model):
 
     def __str__(self):
         return f"{self.task} - {self.get_notification_type_display()}"
+
+
+class Invitation(models.Model):
+    email = models.EmailField(db_index=True)
+    token_digest = models.CharField(max_length=64, unique=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="created_invitations",
+    )
+    accepted_by = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="accepted_invitation",
+        null=True,
+        blank=True,
+    )
+    expires_at = models.DateTimeField(db_index=True)
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+    def __str__(self):
+        return self.email

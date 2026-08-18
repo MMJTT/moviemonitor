@@ -1,6 +1,8 @@
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 
+from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.core import signing
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -107,7 +109,13 @@ def payload_from_signed_preview(value: str) -> TaskPreviewPayload:
     return payload
 
 
-def create_task(signed_preview: str, cinema_id: str, manual_name: str) -> MonitorTask:
+def create_task(
+    signed_preview: str,
+    cinema_id: str,
+    manual_name: str,
+    *,
+    owner,
+) -> MonitorTask:
     payload = payload_from_signed_preview(signed_preview)
     if date.fromisoformat(payload.show_date) < timezone.localdate():
         raise TaskCreationError("预览日期已过，请重新预览。")
@@ -140,9 +148,26 @@ def create_task(signed_preview: str, cinema_id: str, manual_name: str) -> Monito
             message = "请先验证 Agent Mail 配置。"
         raise TaskCreationError(message)
 
+    unfinished_statuses = [
+        MonitorTask.Status.MONITORING,
+        MonitorTask.Status.PAUSED,
+        MonitorTask.Status.DETECTED,
+        MonitorTask.Status.ERROR,
+    ]
     try:
         with transaction.atomic():
+            owner = get_user_model().objects.select_for_update().get(pk=owner.pk)
+            if not owner.is_active or not owner.email:
+                raise TaskCreationError("当前账号无法接收提醒邮件。")
+            if MonitorTask.objects.filter(
+                owner=owner,
+                status__in=unfinished_statuses,
+            ).count() >= settings.MAX_ACTIVE_TASKS_PER_USER:
+                raise TaskCreationError(
+                    f"每个账号最多同时监控 {settings.MAX_ACTIVE_TASKS_PER_USER} 个目标。"
+                )
             task = MonitorTask.objects.create(
+                owner=owner,
                 source_url=payload.source_url,
                 normalized_url=payload.normalized_url,
                 query_key=payload.query_key,
@@ -168,7 +193,7 @@ def enqueue_immediate_check(task_id) -> None:
     wake_scheduler()
 
 
-def cancel_task(task_id, now=None):
+def cancel_task(task_id, *, owner, now=None):
     unfinished_statuses = {
         MonitorTask.Status.MONITORING,
         MonitorTask.Status.PAUSED,
@@ -177,7 +202,11 @@ def cancel_task(task_id, now=None):
     }
     now = now or timezone.now()
     with transaction.atomic():
-        task = MonitorTask.objects.select_for_update().filter(pk=task_id).first()
+        task = (
+            MonitorTask.objects.select_for_update()
+            .filter(pk=task_id, owner=owner)
+            .first()
+        )
         if task is None:
             raise MonitorTask.DoesNotExist
         if task.status not in unfinished_statuses:

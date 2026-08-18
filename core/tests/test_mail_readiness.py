@@ -80,7 +80,6 @@ def test_mail_readiness_rejects_future_attestation_timestamp():
     ("field", "value"),
     [
         ("sender_email", "wrong@example.com"),
-        ("recipient_email", "attacker@example.com"),
     ],
 )
 @pytest.mark.django_db

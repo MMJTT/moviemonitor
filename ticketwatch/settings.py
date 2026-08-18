@@ -44,6 +44,7 @@ AGENT_MAIL_ATTESTATION_TTL_SECONDS = int(
 )
 AGENT_MAIL_CLAIM_SECONDS = int(os.environ.get("AGENT_MAIL_CLAIM_SECONDS", "120"))
 AGENTLY_WORKSPACE = os.environ.get("AGENTLY_WORKSPACE", "codex")
+MAX_ACTIVE_TASKS_PER_USER = int(os.environ.get("MAX_ACTIVE_TASKS_PER_USER", "10"))
 
 
 # Application definition
@@ -138,3 +139,11 @@ WHITENOISE_AUTOREFRESH = ENVIRONMENT != "production"
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+LOGIN_URL = "core:login"
+LOGIN_REDIRECT_URL = "core:dashboard"
+LOGOUT_REDIRECT_URL = "core:login"
+SESSION_COOKIE_HTTPONLY = True
+CSRF_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_SAMESITE = "Lax"

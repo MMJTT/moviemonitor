@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block title %}接受邀请 · TicketWatch{% endblock %}
+
+{% block content %}
+  <header class="page-heading split-heading">
+    <div><p class="eyebrow">Invitation</p><h1>加入 TicketWatch</h1></div>
+    <p>邀请只绑定到 <strong>{{ invitation.email }}</strong>，注册成功后链接立即失效。</p>
+  </header>
+  <section class="form-layout">
+    <aside class="form-context"><span class="context-number">01</span><strong>一次邀请，一个账号</strong><p>提醒将发送到受邀邮箱。密码只用于登录 TicketWatch。</p></aside>
+    <div class="form-card"><form method="post" novalidate>{% csrf_token %}{% include "core/_form_fields.html" %}<button class="button-primary" type="submit">创建账号</button></form></div>
+  </section>
+{% endblock %}

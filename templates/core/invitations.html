@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+
+{% block title %}邀请用户 · TicketWatch{% endblock %}
+
+{% block content %}
+  <header class="page-heading split-heading"><div><p class="eyebrow">Invite only</p><h1>邀请新用户</h1></div><p>链接有效 7 天且只能使用一次。重新邀请同一邮箱会立即撤销旧链接。</p></header>
+  {% if issued_url %}<section class="notice notice-success invite-result"><div><h2>邀请已生成</h2><p>这是唯一一次显示完整链接，请通过可信渠道发给对方。</p><code>{{ issued_url }}</code></div></section>{% endif %}
+  <section class="form-layout">
+    <aside class="form-context"><span class="context-number">7D</span><strong>一次性链接</strong><p>数据库只保存令牌哈希；过期、使用或重新邀请后都不能再次注册。</p></aside>
+    <div class="form-card"><form method="post" novalidate>{% csrf_token %}{% include "core/_form_fields.html" %}<button class="button-primary" type="submit">生成邀请链接</button></form></div>
+  </section>
+  <section class="panel table-panel"><h2>最近邀请</h2><div class="table-scroll"><table><thead><tr><th>邮箱</th><th>创建时间</th><th>到期时间</th><th>状态</th><th>操作</th></tr></thead><tbody>{% for invite in invitations %}<tr><td>{{ invite.email }}</td><td>{{ invite.created_at|date:"Y-m-d H:i" }}</td><td>{{ invite.expires_at|date:"Y-m-d H:i" }}</td><td>{% if invite.accepted_at %}已使用{% elif invite.revoked_at %}已撤销{% elif invite.expires_at <= now %}已过期{% else %}待注册{% endif %}</td><td>{% if not invite.accepted_at and not invite.revoked_at and invite.expires_at > now %}<form method="post" action="{% url 'core:invitation-revoke' invite.pk %}">{% csrf_token %}<button class="button-secondary" type="submit">撤销</button></form>{% else %}<span class="muted">—</span>{% endif %}</td></tr>{% empty %}<tr><td colspan="5">尚无邀请。</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

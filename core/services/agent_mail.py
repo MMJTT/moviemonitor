@@ -4,8 +4,10 @@ import shutil
 import subprocess
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
 
-from core.mail_constants import AGENT_MAIL_RECIPIENT, AGENT_MAIL_SENDER
+from core.mail_constants import AGENT_MAIL_SENDER
 
 
 class AgentMailError(RuntimeError):
@@ -118,8 +120,10 @@ def verify_agent_mail():
 
 
 def send_agent_mail(recipient, subject, body):
-    if recipient != AGENT_MAIL_RECIPIENT:
-        raise AgentMailConfigError("agent-mail-recipient-mismatch")
+    try:
+        validate_email(recipient)
+    except ValidationError as exc:
+        raise AgentMailConfigError("agent-mail-recipient-invalid") from exc
     verify_agent_mail()
     payload = _run(
         [
@@ -145,13 +149,11 @@ def send_agent_mail(recipient, subject, body):
     return "queued"
 
 
-def test_agent_mail_config(config):
+def test_agent_mail_config(config, recipient=None):
     if config.sender_email != AGENT_MAIL_SENDER:
         raise AgentMailConfigError("agent-mail-sender-mismatch")
-    if config.recipient_email != AGENT_MAIL_RECIPIENT:
-        raise AgentMailConfigError("agent-mail-recipient-mismatch")
     return send_agent_mail(
-        config.recipient_email,
+        recipient or config.recipient_email,
         "TicketWatch Agent Mail 测试邮件",
         "这是一封 TicketWatch Agent Mail 测试邮件。",
     )

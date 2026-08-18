@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+
+{% block title %}邀请已失效 · TicketWatch{% endblock %}
+
+{% block content %}
+  <section class="empty-state ticket-surface"><p class="eyebrow">Invitation closed</p><h1>这个邀请已失效</h1><p>链接可能已被使用、撤销或超过 7 天。请联系管理员重新生成邀请。</p><a class="button button-secondary" href="{% url 'core:login' %}">返回登录</a></section>
+{% endblock %}

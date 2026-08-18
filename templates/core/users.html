@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+
+{% block title %}用户管理 · TicketWatch{% endblock %}
+
+{% block content %}
+  <header class="page-heading split-heading"><div><p class="eyebrow">Members</p><h1>用户管理</h1></div><p>停用账号会阻止登录和邮件派发，并暂停其仍在检查的任务；重新启用不会自动恢复任务。</p></header>
+  <section class="panel table-panel"><div class="table-scroll"><table><thead><tr><th>邮箱</th><th>角色</th><th>状态</th><th>活动任务</th><th>操作</th></tr></thead><tbody>{% for member in users %}<tr><td>{{ member.email }}</td><td>{% if member.is_staff %}管理员{% else %}用户{% endif %}</td><td>{% if member.is_active %}正常{% else %}已停用{% endif %}</td><td>{{ member.monitor_tasks.count }}</td><td>{% if member.pk == request.user.pk %}<span class="muted">当前账号</span>{% else %}<form method="post" action="{% url 'core:user-toggle' member.pk %}">{% csrf_token %}<button class="button-secondary" type="submit">{% if member.is_active %}停用{% else %}启用{% endif %}</button></form>{% endif %}</td></tr>{% endfor %}</tbody></table></div></section>
+{% endblock %}

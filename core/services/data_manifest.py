@@ -3,22 +3,38 @@
 import json
 from hashlib import sha256
 
+from django.contrib.auth import get_user_model
 from django.core.serializers.json import DjangoJSONEncoder
 
-from core.models import AgentMailConfig, AppSetting, CheckRun, MonitorTask, Notification
+from core.models import (
+    AgentMailConfig,
+    AppSetting,
+    CheckRun,
+    Invitation,
+    MonitorTask,
+    Notification,
+)
 
 MANIFEST_MODELS = (
     AppSetting,
     AgentMailConfig,
+    get_user_model(),
+    Invitation,
     MonitorTask,
     CheckRun,
     Notification,
 )
+MANIFEST_EXCLUDED_FIELDS = {
+    get_user_model(): frozenset({"last_login"}),
+}
 
 
 def _model_digest(model):
+    excluded = MANIFEST_EXCLUDED_FIELDS.get(model, frozenset())
     fields = tuple(
-        field for field in model._meta.concrete_fields if not field.auto_created
+        field
+        for field in model._meta.concrete_fields
+        if not field.auto_created and field.name not in excluded
     )
     rows = [
         {field.name: field.value_from_object(instance) for field in fields}
@@ -37,6 +53,6 @@ def _model_digest(model):
 def build_data_manifest():
     """Return checksums for the durable models that must survive database migration."""
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "models": {model._meta.label_lower: _model_digest(model) for model in MANIFEST_MODELS},
     }

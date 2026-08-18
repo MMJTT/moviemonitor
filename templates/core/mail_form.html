@@ -15,8 +15,8 @@
   <section class="form-layout form-layout-wide">
     <aside class="form-context mail-context" aria-label="Agent Mail 发件信息">
       <div class="mail-stamp" aria-hidden="true">AGENT</div>
-      <strong>固定邮件地址</strong>
-      <dl><div><dt>发件人</dt><dd><code>{{ config.sender_email }}</code></dd></div><div><dt>收件人</dt><dd><code>{{ config.recipient_email }}</code></dd></div><div><dt>传输</dt><dd>Agent Mail CLI</dd></div></dl>
+      <strong>共享发件身份</strong>
+      <dl><div><dt>发件人</dt><dd><code>{{ config.sender_email }}</code></dd></div><div><dt>测试收件人</dt><dd><code>{{ request.user.email }}</code></dd></div><div><dt>正式提醒</dt><dd>各任务所属用户</dd></div><div><dt>传输</dt><dd>Agent Mail CLI</dd></div></dl>
       <p>凭据仅保存在服务器 Worker 的钥匙串中；Web 不读取邮箱密码或 OAuth Token。</p>
     </aside>
     <div class="form-card">
@@ -26,7 +26,7 @@
       {% if config.verification_status == "PENDING" %}
         <p class="notice notice-warning">等待后台 Worker 验证，页面将在两秒后自动刷新。</p>
       {% elif config.verification_status == "VERIFIED" and config.is_verified %}
-        <p class="notice notice-success">Worker 已确认固定邮箱身份。最近验证时间：{{ config.verified_at|date:"Y年m月d日 H:i" }}。</p>
+        <p class="notice notice-success">Worker 已确认固定邮箱身份（共享发件人）。最近验证时间：{{ config.verified_at|date:"Y年m月d日 H:i" }}。</p>
       {% else %}
         <p class="notice notice-error" role="alert">验证失败：{{ config.last_error|default:"agent-mail-unverified" }}。</p>
         <p>如凭据已失效，请在服务器 Worker 环境完成 Agent Mail 设备登录后重新验证。</p>

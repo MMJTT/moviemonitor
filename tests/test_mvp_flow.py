@@ -54,12 +54,13 @@ def closed_result_for(task):
 
 
 @pytest.fixture
-def task_factory(db):
+def task_factory(db, owner_user):
     def create(**overrides):
         values = {
             "source_url": (
                 "https://www.maoyan.com/cinemas?movieId=1545360&showDate=2026-08-20"
             ),
+            "owner": owner_user,
             "normalized_url": (
                 "https://www.maoyan.com/cinemas?movieId=1545360&showDate=2026-08-20"
             ),

@@ -5,9 +5,9 @@
 {% block content %}
   <section class="hero dashboard-hero">
     <div class="hero-copy">
-      <p class="eyebrow"><span>Now screening</span> 本地多任务开票监控</p>
+      <p class="eyebrow"><span>Now screening</span> {{ request.user.email }}</p>
       <h1>盯住开票，<br><em>不必守着刷新。</em></h1>
-      <p class="lede">锁定一部电影、一个日期和一家影院。系统在本机安静检查，开票或到期时只发送一次邮件。</p>
+      <p class="lede">锁定一部电影、一个日期和一家影院。后台持续检查，开票或到期时只向你的注册邮箱发送一次提醒。</p>
     </div>
     <div class="screen-status" aria-label="当前三级检查频率">
       <div class="screen-status-head"><span class="live-light" aria-hidden="true"></span>MONITOR READY</div>
@@ -33,7 +33,7 @@
         <h2 id="mail-needed">先验证 Agent Mail</h2>
         <p>任务只能在后台 Worker 确认固定邮箱身份后创建。Web 不接触 Agent Mail 凭据，也不需要个人邮箱授权码。</p>
       </div>
-      <a class="button button-primary" href="{% url 'core:mail-edit' %}">设置邮件</a>
+      {% if request.user.is_staff %}<a class="button button-primary" href="{% url 'core:mail-edit' %}">设置邮件</a>{% else %}<span class="status status-paused">等待管理员恢复</span>{% endif %}
     </section>
   {% elif not active_tasks and not recent_tasks %}
     <section class="empty-state ticket-surface">

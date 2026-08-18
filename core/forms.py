@@ -1,8 +1,18 @@
 from django import forms
+from django.contrib.auth import get_user_model
+from django.contrib.auth.forms import AuthenticationForm
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
 
 from core.models import AppSetting
+from core.services.invitations import InvitationError, normalize_email
 
 MAOYAN_CITIES = {10: "上海"}
+
+
+class EmailAuthenticationForm(AuthenticationForm):
+    def clean_username(self):
+        return self.cleaned_data["username"].strip().casefold()
 
 
 class AppSettingForm(forms.ModelForm):
@@ -65,3 +75,48 @@ class TaskConfirmForm(forms.Form):
         if bool(cinema_id) == bool(manual_name):
             raise forms.ValidationError("请选择一家可见影院，或手动输入一家影院名称。")
         return cleaned_data
+
+
+class InvitationForm(forms.Form):
+    email = forms.EmailField(label="受邀邮箱", max_length=150)
+
+    def clean_email(self):
+        try:
+            return normalize_email(self.cleaned_data["email"])
+        except InvitationError as exc:
+            raise forms.ValidationError(str(exc)) from exc
+
+
+class InvitationRegistrationForm(forms.Form):
+    email = forms.EmailField(label="邮箱", disabled=True)
+    password1 = forms.CharField(label="密码", strip=False, widget=forms.PasswordInput)
+    password2 = forms.CharField(label="确认密码", strip=False, widget=forms.PasswordInput)
+
+    def __init__(self, *args, invitation, **kwargs):
+        self.invitation = invitation
+        kwargs.setdefault("initial", {})["email"] = invitation.email
+        super().__init__(*args, **kwargs)
+
+    def clean(self):
+        cleaned = super().clean()
+        password1 = cleaned.get("password1")
+        password2 = cleaned.get("password2")
+        if password1 and password2 and password1 != password2:
+            self.add_error("password2", "两次输入的密码不一致。")
+        if password1:
+            User = get_user_model()
+            candidate = User(username=self.invitation.email, email=self.invitation.email)
+            try:
+                validate_password(password1, user=candidate)
+            except ValidationError as exc:
+                self.add_error("password1", exc)
+        return cleaned
+
+    def save(self):
+        User = get_user_model()
+        email = self.invitation.email
+        return User.objects.create_user(
+            username=email,
+            email=email,
+            password=self.cleaned_data["password1"],
+        )

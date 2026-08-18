@@ -16,24 +16,34 @@
     <a class="skip-link" href="#main-content">跳到主要内容</a>
     <header class="site-header">
       <div class="shell header-inner">
-        <a class="brand" href="{% url 'core:dashboard' %}" aria-label="TicketWatch 首页">
+        <a class="brand" href="{% if request.user.is_authenticated %}{% url 'core:dashboard' %}{% else %}{% url 'core:login' %}{% endif %}" aria-label="TicketWatch 首页">
           <span class="brand-mark" aria-hidden="true"><span></span></span>
-          <span class="brand-copy"><strong>TicketWatch</strong><small>本地开票监控</small></span>
+          <span class="brand-copy"><strong>TicketWatch</strong><small>邀请制开票监控</small></span>
         </a>
+        {% if request.user.is_authenticated %}
         <nav class="primary-nav" aria-label="主导航">
           <a href="{% url 'core:dashboard' %}"{% if request.resolver_match.url_name == "dashboard" or request.resolver_match.url_name == "task-detail" %} aria-current="page"{% endif %}>仪表盘</a>
           <a href="{% url 'core:task-preview' %}"{% if request.resolver_match.url_name == "task-preview" or request.resolver_match.url_name == "task-confirm" %} aria-current="page"{% endif %}>新建任务</a>
-          <a href="{% url 'core:mail-edit' %}"{% if request.resolver_match.url_name == "mail-edit" %} aria-current="page"{% endif %}>邮件</a>
-          <a href="{% url 'core:settings' %}"{% if request.resolver_match.url_name == "settings" %} aria-current="page"{% endif %}>设置</a>
+          {% if request.user.is_staff %}
+            <a href="{% url 'core:invitations' %}"{% if request.resolver_match.url_name == "invitations" %} aria-current="page"{% endif %}>邀请</a>
+            <a href="{% url 'core:users' %}"{% if request.resolver_match.url_name == "users" %} aria-current="page"{% endif %}>用户</a>
+            <a href="{% url 'core:mail-edit' %}"{% if request.resolver_match.url_name == "mail-edit" %} aria-current="page"{% endif %}>邮件</a>
+            <a href="{% url 'core:settings' %}"{% if request.resolver_match.url_name == "settings" %} aria-current="page"{% endif %}>设置</a>
+          {% endif %}
+          <form class="nav-logout" method="post" action="{% url 'core:logout' %}">{% csrf_token %}<button type="submit">退出</button></form>
         </nav>
+        {% endif %}
       </div>
     </header>
     <main class="shell page-stack" id="main-content" tabindex="-1">
+      {% if messages %}
+        {% for message in messages %}<p class="notice notice-{{ message.tags|default:'warning' }}" role="status">{{ message }}</p>{% endfor %}
+      {% endif %}
       {% block content %}{% endblock %}
     </main>
     <footer class="shell site-footer">
-      <span class="local-indicator"><i aria-hidden="true"></i>本地服务运行中</span>
-      <p>127.0.0.1&nbsp;&nbsp;/&nbsp;&nbsp;关闭终端进程会停止监控</p>
+      <span class="local-indicator"><i aria-hidden="true"></i>后台监控运行中</span>
+      {% if request.user.is_authenticated %}<p>{{ request.user.email }}</p>{% else %}<p>仅限受邀用户</p>{% endif %}
     </footer>
   </body>
 </html>

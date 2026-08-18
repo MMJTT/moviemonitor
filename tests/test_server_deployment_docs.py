@@ -209,12 +209,19 @@ def test_weekly_mac_copy_checks_source_and_destination_hashes():
 
 
 def test_worker_owned_mail_attestation_rollout_is_documented():
-    assert "core.0009_agent_mail_verification_retry" in DOCUMENT
+    assert "core.0010_invite_users_and_task_owners" in DOCUMENT
     assert "Worker 启动时先执行一次身份验证并写入有时效的验证证明" in DOCUMENT
     assert "Web 容器绝不运行 `agently-cli`" in DOCUMENT
     assert "验证按钮只把 Worker 请求持久化到 PostgreSQL" in DOCUMENT
     assert "邮件验证失败不会停止电影检查" in DOCUMENT
     assert "必须通过生产 Web 页面和服务路径创建最终验收任务" in DOCUMENT
+
+
+def test_invite_user_migration_and_admin_password_are_documented():
+    assert "core.0010_invite_users_and_task_owners" in DOCUMENT
+    assert "auth.User core.Invitation" in DOCUMENT
+    assert "导出 JSON 含密码哈希" in DOCUMENT
+    assert "python manage.py changepassword 850634546@qq.com" in DOCUMENT
 
 
 def test_web_deployment_never_receives_agent_mail_credentials():

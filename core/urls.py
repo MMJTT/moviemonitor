@@ -1,11 +1,32 @@
+from django.contrib.auth import views as auth_views
 from django.urls import path
 
 from core import views
+from core.forms import EmailAuthenticationForm
 
 app_name = "core"
 
 urlpatterns = [
+    path(
+        "login/",
+        auth_views.LoginView.as_view(
+            template_name="registration/login.html",
+            authentication_form=EmailAuthenticationForm,
+            redirect_authenticated_user=True,
+        ),
+        name="login",
+    ),
+    path("logout/", auth_views.LogoutView.as_view(), name="logout"),
+    path("invite/<str:token>/", views.invite_register, name="invite-register"),
     path("", views.dashboard, name="dashboard"),
+    path("invites/", views.invitations, name="invitations"),
+    path(
+        "invites/<int:invitation_id>/revoke/",
+        views.invitation_revoke,
+        name="invitation-revoke",
+    ),
+    path("users/", views.users, name="users"),
+    path("users/<int:user_id>/toggle/", views.user_toggle, name="user-toggle"),
     path("settings/", views.settings_edit, name="settings"),
     path("mail/", views.mail_edit, name="mail-edit"),
     path("mail/test/", views.mail_test, name="mail-test"),

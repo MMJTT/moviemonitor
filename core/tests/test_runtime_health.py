@@ -387,5 +387,5 @@ def test_dashboard_displays_runtime_summary(client, mocker):
 
     assert "运行状态" in body
     assert "Worker stale" in body
-    assert "监控中 2" in body
-    assert "待发通知 3" in body
+    assert "监控中 0" in body
+    assert "待发通知 0" in body

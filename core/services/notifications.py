@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from datetime import timedelta
 
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
 from django.db import transaction
 from django.db.models import Q
 from django.urls import reverse
@@ -255,7 +257,12 @@ def deliver_notification(notification_id, now=None):
     if task_id is None:
         return
     with transaction.atomic():
-        task = MonitorTask.objects.select_for_update().filter(pk=task_id).first()
+        task = (
+            MonitorTask.objects.select_for_update()
+            .select_related("owner")
+            .filter(pk=task_id)
+            .first()
+        )
         if task is None:
             return
         notification = (
@@ -291,6 +298,20 @@ def deliver_notification(notification_id, now=None):
             update_fields=["status", "message_id", "next_attempt_at", "updated_at"]
         )
 
+        recipient = task.owner.email.strip().casefold() if task.owner.email else ""
+        try:
+            validate_email(recipient)
+        except ValidationError:
+            recipient = ""
+        if not task.owner.is_active or not recipient:
+            notification.status = Notification.Status.PERMANENT_FAILED
+            notification.next_attempt_at = None
+            notification.last_error = "recipient-account-unavailable"
+            notification.save(
+                update_fields=["status", "next_attempt_at", "last_error", "updated_at"]
+            )
+            return
+
     config = AgentMailConfig.get_solo()
     if not config.is_verified:
         _park_for_mail_repair(
@@ -303,9 +324,7 @@ def deliver_notification(notification_id, now=None):
     notification.task = task
     outgoing = _build_message(notification, now)
     try:
-        response = send_agent_mail(
-            config.recipient_email, outgoing.subject, outgoing.body
-        )
+        response = send_agent_mail(recipient, outgoing.subject, outgoing.body)
     except AgentMailUncertainError as exc:
         error = safe_agent_mail_error_code(exc)
         with transaction.atomic():
@@ -389,7 +408,10 @@ def dispatch_due_notifications(now=None):
     if not AgentMailConfig.objects.filter(is_verified=True).exists():
         return 0
     ids = list(
-        Notification.objects.filter(status=Notification.Status.PENDING)
+        Notification.objects.filter(
+            status=Notification.Status.PENDING,
+            task__owner__is_active=True,
+        )
         .filter(Q(next_attempt_at__isnull=True) | Q(next_attempt_at__lte=now))
         .order_by("created_at", "pk")
         .values_list("pk", flat=True)[:1]

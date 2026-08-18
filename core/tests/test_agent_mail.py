@@ -109,30 +109,31 @@ def test_send_agent_mail_uses_confirmed_argument_list_without_a_shell(mocker):
     assert run.call_args_list[1].kwargs["shell"] is False
 
 
-def test_send_agent_mail_rejects_recipient_drift_before_identity_cli(mocker):
-    """Checking the recipient after identity I/O could still reach an unsafe send path."""
+def test_send_agent_mail_rejects_invalid_recipient_before_identity_cli(mocker):
     verify = mocker.patch("core.services.agent_mail.verify_agent_mail")
     run = mocker.patch("core.services.agent_mail._run")
 
-    with pytest.raises(AgentMailConfigError, match="agent-mail-recipient-mismatch"):
-        send_agent_mail("attacker@example.com", "测试", "正文")
+    with pytest.raises(AgentMailConfigError, match="agent-mail-recipient-invalid"):
+        send_agent_mail("not-an-email", "测试", "正文")
 
     verify.assert_not_called()
     run.assert_not_called()
 
 
-def test_agent_mail_config_rejects_recipient_drift_before_transport(mocker):
-    """A modified singleton recipient must not be passed into the transport."""
+def test_agent_mail_config_can_send_to_an_explicit_registered_recipient(mocker):
     send = mocker.patch("core.services.agent_mail.send_agent_mail")
     config = SimpleNamespace(
         sender_email=SENDER,
         recipient_email="attacker@example.com",
     )
 
-    with pytest.raises(AgentMailConfigError, match="agent-mail-recipient-mismatch"):
-        run_agent_mail_config_test(config)
+    run_agent_mail_config_test(config, recipient="member@example.com")
 
-    send.assert_not_called()
+    send.assert_called_once_with(
+        "member@example.com",
+        "TicketWatch Agent Mail 测试邮件",
+        "这是一封 TicketWatch Agent Mail 测试邮件。",
+    )
 
 
 @pytest.mark.parametrize(

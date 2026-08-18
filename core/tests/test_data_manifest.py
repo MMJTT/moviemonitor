@@ -38,7 +38,8 @@ def test_manifest_is_stable_for_durable_business_data(task_factory):
     manifest = build_data_manifest()
 
     assert build_data_manifest() == manifest
-    assert manifest["schema_version"] == 1
+    assert manifest["schema_version"] == 2
+    assert manifest["models"]["auth.user"]["count"] >= 1
     assert manifest["models"]["core.monitortask"]["count"] == 2
     assert len(manifest["models"]["core.monitortask"]["sha256"]) == 64
     assert "runtimestate" not in manifest["models"]
@@ -64,6 +65,15 @@ def test_manifest_ignores_runtime_state_changes():
 
     state.worker_heartbeat_at = timezone.now()
     state.save(update_fields=["worker_heartbeat_at"])
+
+    assert build_data_manifest() == before
+
+
+def test_manifest_ignores_ephemeral_user_login_timestamp(owner_user):
+    before = build_data_manifest()
+
+    owner_user.last_login = timezone.now()
+    owner_user.save(update_fields=["last_login"])
 
     assert build_data_manifest() == before
 

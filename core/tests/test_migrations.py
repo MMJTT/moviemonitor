@@ -9,6 +9,7 @@ MIGRATION_0006 = ("core", "0006_terminal_failure_streak")
 MIGRATION_0007 = ("core", "0007_runtime_state")
 MIGRATION_0008 = ("core", "0008_agent_mail_verification_state")
 MIGRATION_0009 = ("core", "0009_agent_mail_verification_retry")
+MIGRATION_0010 = ("core", "0010_invite_users_and_task_owners")
 
 
 @pytest.mark.django_db(transaction=True)
@@ -131,6 +132,47 @@ def test_0009_initializes_persisted_identity_retry_state():
     config = NewAgentMailConfig.objects.get(pk=1)
     assert config.verification_retry_count == 0
     assert config.verification_next_attempt_at is None
+
+    restore_executor = MigrationExecutor(connection)
+    restore_executor.migrate(restore_executor.loader.graph.leaf_nodes())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_0010_assigns_existing_tasks_to_the_invited_admin_owner():
+    executor = MigrationExecutor(connection)
+    executor.migrate([MIGRATION_0009])
+    auth_leaf = executor.loader.graph.leaf_nodes("auth")[0]
+    old_apps = executor.loader.project_state([MIGRATION_0009, auth_leaf]).apps
+    OldMonitorTask = old_apps.get_model("core", "MonitorTask")
+    OldUser = old_apps.get_model("auth", "User")
+    OldMonitorTask.objects.all().delete()
+    OldUser.objects.filter(username="850634546@qq.com").delete()
+    old_task = OldMonitorTask.objects.create(
+        source_url="https://www.maoyan.com/cinemas?movieId=1545360",
+        normalized_url="https://www.maoyan.com/cinemas?movieId=1545360",
+        query_key="maoyan:10:legacy-owner",
+        city_id=10,
+        city_name="上海",
+        movie_id="1545360",
+        movie_name="奥德赛",
+        show_date=timezone.localdate(),
+        cinema_name="测试影院",
+        normalized_cinema_name="测试影院",
+    )
+
+    executor = MigrationExecutor(connection)
+    executor.migrate([MIGRATION_0010])
+    new_apps = executor.loader.project_state([MIGRATION_0010, auth_leaf]).apps
+    NewMonitorTask = new_apps.get_model("core", "MonitorTask")
+    NewUser = new_apps.get_model("auth", "User")
+
+    owner = NewUser.objects.get(username="850634546@qq.com")
+    migrated = NewMonitorTask.objects.get(pk=old_task.pk)
+    assert migrated.owner_id == owner.pk
+    assert owner.email == "850634546@qq.com"
+    assert owner.is_staff is True
+    assert owner.is_superuser is True
+    assert owner.password.startswith("!")
 
     restore_executor = MigrationExecutor(connection)
     restore_executor.migrate(restore_executor.loader.graph.leaf_nodes())

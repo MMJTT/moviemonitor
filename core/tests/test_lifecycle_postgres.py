@@ -53,8 +53,14 @@ def _disable_process_local_transition_locks(mocker):
     )
 
 
+def _post_cancel(task_id, owner_user):
+    client = Client()
+    client.force_login(owner_user)
+    return client.post(reverse("core:task-cancel", args=[task_id]))
+
+
 def test_postgres_cancel_first_prevents_delivery_without_stale_overwrite(
-    opening_notification, verified_smtp, mocker
+    opening_notification, verified_smtp, mocker, owner_user
 ):
     """A process-local lock cannot protect Web cancellation from Worker delivery."""
     _disable_process_local_transition_locks(mocker)
@@ -80,9 +86,7 @@ def test_postgres_cancel_first_prevents_delivery_without_stale_overwrite(
     cancel_thread, cancel_errors = _start_database_thread(
         "postgres-cancel",
         lambda: responses.append(
-            Client().post(
-                reverse("core:task-cancel", args=[opening_notification.task_id])
-            )
+            _post_cancel(opening_notification.task_id, owner_user)
         ),
         backend_pids,
     )
@@ -118,7 +122,7 @@ def test_postgres_cancel_first_prevents_delivery_without_stale_overwrite(
 
 
 def test_postgres_delivery_first_completes_and_cancel_returns_conflict(
-    opening_notification, verified_smtp, mocker
+    opening_notification, verified_smtp, mocker, owner_user
 ):
     """Delivery ownership must be visible to an independent cancelling connection."""
     _disable_process_local_transition_locks(mocker)
@@ -142,9 +146,7 @@ def test_postgres_delivery_first_completes_and_cancel_returns_conflict(
     assert send_started.wait(timeout=5)
     cancelling_pid = _database_pid()
 
-    response = Client().post(
-        reverse("core:task-cancel", args=[opening_notification.task_id])
-    )
+    response = _post_cancel(opening_notification.task_id, owner_user)
     release_send.set()
     delivery_thread.join(timeout=5)
 

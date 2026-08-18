@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block title %}登录 · TicketWatch{% endblock %}
+
+{% block content %}
+  <section class="auth-layout">
+    <div class="auth-intro">
+      <p class="eyebrow">Private screening</p>
+      <h1>登录后，<br><em>让后台替你等。</em></h1>
+      <p>TicketWatch 只对受邀用户开放。每个人只能看到自己的监控任务，提醒发送到各自的注册邮箱。</p>
+    </div>
+    <div class="form-card auth-card">
+      <p class="eyebrow">Member access</p>
+      <h2>账号登录</h2>
+      {% if form.errors %}<p class="notice notice-error" role="alert">邮箱或密码不正确。</p>{% endif %}
+      <form method="post" novalidate>
+        {% csrf_token %}
+        <div class="field"><div class="field-label-row"><label for="id_username">邮箱</label></div><input id="id_username" name="username" type="email" autocomplete="email" required autofocus></div>
+        <div class="field"><div class="field-label-row"><label for="id_password">密码</label></div><input id="id_password" name="password" type="password" autocomplete="current-password" required></div>
+        {% if next %}<input type="hidden" name="next" value="{{ next }}">{% endif %}
+        <button class="button-primary" type="submit">登录 TicketWatch</button>
+      </form>
+      <p class="muted auth-note">没有账号？请让管理员为你的邮箱生成一次性邀请链接。</p>
+    </div>
+  </section>
+{% endblock %}

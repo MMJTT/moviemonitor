@@ -269,10 +269,10 @@ def test_proof_invalidating_error_preserves_request_created_during_send(
 
 
 @pytest.mark.django_db
-def test_notification_recipient_drift_is_rejected_before_cli(
-    opening_notification, verified_mail, mocker
+def test_notification_ignores_global_test_recipient_and_uses_task_owner(
+    opening_notification, verified_mail, mocker, owner_user
 ):
-    """Trusting mutable DB recipient data would send mail outside the fixed boundary."""
+    """A mutable global test address must not redirect another user's task email."""
     AgentMailConfig.objects.filter(pk=verified_mail.pk).update(
         recipient_email="attacker@example.com"
     )
@@ -285,10 +285,9 @@ def test_notification_recipient_drift_is_rejected_before_cli(
     deliver_notification(opening_notification.pk, now=timezone.now())
 
     opening_notification.refresh_from_db()
-    assert opening_notification.status == Notification.Status.PENDING
-    assert opening_notification.last_error == "agent-mail-config-error"
-    verify.assert_not_called()
-    run.assert_not_called()
+    assert opening_notification.status == Notification.Status.SENT
+    verify.assert_called_once_with()
+    assert run.call_args.args[0][2:4] == ["--to", owner_user.email]
 
 
 @pytest.mark.parametrize(

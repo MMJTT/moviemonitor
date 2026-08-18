@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from django.conf import settings
 from django.utils import timezone
 
-from core.mail_constants import AGENT_MAIL_RECIPIENT, AGENT_MAIL_SENDER
+from core.mail_constants import AGENT_MAIL_SENDER
 from core.models import AgentMailConfig, RuntimeState
 from core.services.runtime_health import worker_heartbeat_is_fresh
 
@@ -18,10 +18,7 @@ class MailReadiness:
 def mail_readiness(now: datetime | None = None) -> MailReadiness:
     now = now or timezone.now()
     config = AgentMailConfig.get_solo()
-    if (
-        config.sender_email != AGENT_MAIL_SENDER
-        or config.recipient_email != AGENT_MAIL_RECIPIENT
-    ):
+    if config.sender_email != AGENT_MAIL_SENDER:
         return MailReadiness(False, "mail-address-mismatch")
     if (
         not config.is_verified

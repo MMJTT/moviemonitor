@@ -1,6 +1,6 @@
 # TicketWatch 私有服务器部署与回滚手册
 
-本手册适用于 Alibaba Cloud Linux 4 的单所有者私有部署。Web 仅监听服务器回环地址，所有者通过 SSH 隧道访问。日常操作使用 `admin`；只有标明 `sudo` 的命令提升权限。除非代码块明确标注“Mac”，所有 Bash 代码块都在服务器的 `admin` 会话中执行。
+本手册适用于 Alibaba Cloud Linux 4 的少量受邀用户私有部署。Web 仅监听服务器回环地址，管理员通过 SSH 隧道访问。应用内由管理员生成一次性邀请；在另行配置安全的多人网络入口之前，不要把 SSH 私钥分享给受邀用户。日常操作使用 `admin`；只有标明 `sudo` 的命令提升权限。除非代码块明确标注“Mac”，所有 Bash 代码块都在服务器的 `admin` 会话中执行。
 
 不要开放 `80`、`443`、`8000`、`5432` 或 `6379`。阿里云安全组只保留 `22/TCP`，并尽可能限制 SSH 来源 IP。所有 Git 版本均使用经过审阅的完整 SHA，绝不使用浮动分支或 `latest`。
 
@@ -22,7 +22,7 @@ docker compose version
 
 ## 从本机导出 SQLite
 
-先在运行 `runlocal` 的终端按 `Ctrl-C`，确认没有第二个 `runlocal` 进程；直到迁移验收完成前不要向本地应用写新数据。按固定顺序执行：先复制 SQLite 原件，再将本地 schema 迁移到含持久化 Worker 邮件复验退避的 `core.0009_agent_mail_verification_retry`，然后导出业务数据。
+先在运行 `runlocal` 的终端按 `Ctrl-C`，确认没有第二个 `runlocal` 进程；直到迁移验收完成前不要向本地应用写新数据。按固定顺序执行：先复制 SQLite 原件，再将本地 schema 迁移到含邀请账号和任务 owner 的 `core.0010_invite_users_and_task_owners`，然后导出业务数据。
 
 在 **Mac 本机仓库** 执行：
 
@@ -31,11 +31,11 @@ mkdir -p migration-data
 cp -p db.sqlite3 migration-data/db-before-server.sqlite3
 .venv/bin/python manage.py migrate
 .venv/bin/python manage.py data_manifest --output migration-data/local.manifest.json
-.venv/bin/python manage.py dumpdata core.AppSetting core.AgentMailConfig core.MonitorTask core.CheckRun core.Notification --indent 2 --output migration-data/core-data.json
+.venv/bin/python manage.py dumpdata auth.User core.Invitation core.AppSetting core.AgentMailConfig core.MonitorTask core.CheckRun core.Notification --indent 2 --output migration-data/core-data.json
 (cd migration-data && shasum -a 256 db-before-server.sqlite3 local.manifest.json core-data.json | tee SHA256SUMS)
 ```
 
-记录三个文件的 SHA-256。绝不删除 SQLite 原件；至少保留到服务器验收及一次 PostgreSQL 恢复演练均成功后。
+记录三个文件的 SHA-256。导出 JSON 含密码哈希，必须按敏感迁移材料保护并在验收后清理。绝不删除 SQLite 原件；至少保留到服务器验收及一次 PostgreSQL 恢复演练均成功后。
 
 ## 创建服务器目录和环境文件
 
@@ -273,7 +273,7 @@ curl --fail http://127.0.0.1:8000/statusz
 ss -lntp
 ```
 
-若 `cmp` 失败，保留两个 manifest、停止 Worker 并调查各业务模型摘要；不要向已填充的数据库再跑 `loaddata`。`showmigrations` 必须显示 `[X] 0009_agent_mail_verification_retry`。Agent Mail 登录是 Worker Linux/keyring 中的交互设备授权；不得把长期明文访问令牌写入 `.env`。预检会发真实测试邮件。授权后确认凭据跨重启保存：
+若 `cmp` 失败，保留两个 manifest、停止 Worker 并调查各业务模型摘要；不要向已填充的数据库再跑 `loaddata`。`showmigrations` 必须显示 `[X] 0010_invite_users_and_task_owners`。Agent Mail 登录是 Worker Linux/keyring 中的交互设备授权；不得把长期明文访问令牌写入 `.env`。预检会发真实测试邮件。授权后确认凭据跨重启保存：
 
 ```bash
 docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps worker agently-cli +me
@@ -390,7 +390,8 @@ docker image tag "$NEW_WEB_IMAGE" "$WEB_IMAGE_REF"
 docker image tag "$NEW_WORKER_IMAGE" "$WORKER_IMAGE_REF"
 docker compose --env-file /opt/ticketwatch/.env up -d --wait postgres redis --pull never --no-build
 docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web python manage.py migrate
-docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web python manage.py showmigrations core | grep -F '[X] 0009_agent_mail_verification_retry'
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web python manage.py showmigrations core | grep -F '[X] 0010_invite_users_and_task_owners'
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web python manage.py changepassword 850634546@qq.com
 docker compose --env-file /opt/ticketwatch/.env up -d --no-deps --pull never --no-build web
 curl --fail http://127.0.0.1:8000/healthz
 docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps worker python manage.py agent_mail_preflight
@@ -520,4 +521,4 @@ docker compose --env-file /opt/ticketwatch/.env up -d --pull never --no-build --
 curl --fail http://127.0.0.1:8000/statusz
 ```
 
-恢复后核对业务表数量、活动任务及 `next_check_at`、通知唯一性、`0009_agent_mail_verification_retry` 和私有 UI。保留故障现场备份、恢复记录和本地 SQLite 原件。迁移 JSON/manifests 是明确临时目标；仅在验收后，以指定文件的方式清理，绝不对广泛路径执行删除。
+恢复后核对用户/邀请/业务表数量、任务 owner、活动任务及 `next_check_at`、通知唯一性、`0010_invite_users_and_task_owners` 和私有 UI。保留故障现场备份、恢复记录和本地 SQLite 原件。迁移 JSON/manifests 是明确临时目标；仅在验收后，以指定文件的方式清理，绝不对广泛路径执行删除。
