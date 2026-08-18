@@ -26,6 +26,7 @@ from core.services.tasks import (
     TaskTransitionError,
     cancel_task,
     create_task,
+    payload_from_signed_preview,
     sign_preview,
     task_transition,
 )
@@ -168,6 +169,7 @@ def task_confirm(request):
         return HttpResponseForbidden("请先验证 Agent Mail 配置。")
 
     form = TaskConfirmForm(request.POST)
+    payload = None
     if form.is_valid():
         try:
             task = create_task(
@@ -180,7 +182,19 @@ def task_confirm(request):
         else:
             return redirect("core:task-detail", task_id=task.pk)
 
-    return HttpResponseBadRequest(render(request, "core/task_confirm.html", {"form": form}).content)
+    signed_preview = form.cleaned_data.get("signed_preview")
+    if signed_preview:
+        try:
+            payload = payload_from_signed_preview(signed_preview)
+        except (TaskCreationError, signing.BadSignature):
+            pass
+    return HttpResponseBadRequest(
+        render(
+            request,
+            "core/task_confirm.html",
+            {"form": form, "payload": payload},
+        ).content
+    )
 
 
 def _transition_conflict():

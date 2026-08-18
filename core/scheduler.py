@@ -4,12 +4,17 @@ import threading
 from django.db import close_old_connections
 
 from core.services.coordination import notify_worker
-from core.worker import run_due_work
 
 logger = logging.getLogger(__name__)
 
 _scheduler = None
 _scheduler_lock = threading.Lock()
+
+
+def run_due_work(*args, **kwargs):
+    from core.worker import run_due_work as run_worker_due_work
+
+    return run_worker_due_work(*args, **kwargs)
 
 
 def set_process_scheduler(scheduler):

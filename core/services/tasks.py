@@ -100,7 +100,7 @@ def unsign_preview(value: str, max_age: int = 30 * 60) -> dict:
     return signing.loads(value, salt=PREVIEW_SALT, max_age=max_age)
 
 
-def _payload_from_signed_preview(value: str) -> TaskPreviewPayload:
+def payload_from_signed_preview(value: str) -> TaskPreviewPayload:
     raw = unsign_preview(value)
     try:
         cinemas = tuple(PreviewCinema(id=item["id"], name=item["name"]) for item in raw["cinemas"])
@@ -122,7 +122,7 @@ def _payload_from_signed_preview(value: str) -> TaskPreviewPayload:
 
 
 def create_task(signed_preview: str, cinema_id: str, manual_name: str) -> MonitorTask:
-    payload = _payload_from_signed_preview(signed_preview)
+    payload = payload_from_signed_preview(signed_preview)
     if date.fromisoformat(payload.show_date) < timezone.localdate():
         raise TaskCreationError("预览日期已过，请重新预览。")
     cinema_id = cinema_id.strip()

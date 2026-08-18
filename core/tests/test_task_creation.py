@@ -113,20 +113,57 @@ def test_confirm_reports_stale_worker_without_clearing_mail_verification(
         defaults={"worker_heartbeat_at": timezone.now() - timedelta(minutes=5)},
     )
 
+    payload = preview_payload(
+        (
+            PreviewCinema(id="37534", name="保留选择影院"),
+            PreviewCinema(id="44556", name="另一家影院"),
+        )
+    )
+    signed = sign_preview(payload)
     response = client.post(
         reverse("core:task-confirm"),
         {
-            "signed_preview": sign_preview(preview_payload()),
-            "manual_cinema_name": "目标影院",
+            "signed_preview": signed,
+            "cinema_id": "37534",
         },
     )
 
     verified_smtp.refresh_from_db()
+    body = response.content.decode()
     assert response.status_code == 400
-    assert "后台 Worker 暂不可用" in response.content.decode()
+    assert "后台 Worker 暂不可用" in body
+    assert "奥德赛" in body
+    assert "保留选择影院" in body
+    assert "另一家影院" in body
+    assert f'value="{signed}"' in body
+    assert 'value="37534" checked' in body
     assert verified_smtp.is_verified is True
     assert verified_smtp.verification_status == AgentMailConfig.VerificationStatus.VERIFIED
     assert MonitorTask.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_confirm_readiness_error_preserves_manual_cinema_input(client, verified_smtp):
+    RuntimeState.objects.update_or_create(
+        pk=1,
+        defaults={"worker_heartbeat_at": timezone.now() - timedelta(minutes=5)},
+    )
+    signed = sign_preview(preview_payload())
+
+    response = client.post(
+        reverse("core:task-confirm"),
+        {
+            "signed_preview": signed,
+            "manual_cinema_name": "手动保留影院",
+        },
+    )
+
+    body = response.content.decode()
+    assert response.status_code == 400
+    assert "后台 Worker 暂不可用" in body
+    assert "奥德赛" in body
+    assert f'value="{signed}"' in body
+    assert 'value="手动保留影院"' in body
 
 
 @pytest.mark.django_db
@@ -265,7 +302,7 @@ def test_confirm_uses_selected_cinema_only_from_signed_preview(client, verified_
 
 @pytest.mark.django_db
 def test_confirm_rejects_a_tampered_signed_preview(client, verified_smtp):
-    signed = sign_preview(preview_payload())
+    signed = sign_preview(preview_payload((PreviewCinema("37534", "不可信影院"),)))
     tampered = f"{signed[:-1]}{'a' if signed[-1] != 'a' else 'b'}"
 
     response = client.post(
@@ -274,7 +311,27 @@ def test_confirm_rejects_a_tampered_signed_preview(client, verified_smtp):
     )
 
     assert response.status_code == 400
+    assert "奥德赛" not in response.content.decode()
+    assert "不可信影院" not in response.content.decode()
     assert MonitorTask.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_confirm_does_not_render_payload_from_expired_signature(client, verified_smtp):
+    payload = preview_payload((PreviewCinema("37534", "过期影院"),))
+    with freeze_time("2026-08-18 10:00:00"):
+        signed = sign_preview(payload)
+
+    with freeze_time("2026-08-18 10:31:00"):
+        response = client.post(
+            reverse("core:task-confirm"),
+            {"signed_preview": signed, "cinema_id": "37534"},
+        )
+
+    body = response.content.decode()
+    assert response.status_code == 400
+    assert "奥德赛" not in body
+    assert "过期影院" not in body
 
 
 @pytest.mark.django_db

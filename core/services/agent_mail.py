@@ -5,8 +5,7 @@ import subprocess
 
 from django.conf import settings
 
-AGENT_MAIL_SENDER = "mijiatong@agent.qq.com"
-AGENT_MAIL_RECIPIENT = "850634546@qq.com"
+from core.mail_constants import AGENT_MAIL_RECIPIENT, AGENT_MAIL_SENDER
 
 
 class AgentMailError(RuntimeError):

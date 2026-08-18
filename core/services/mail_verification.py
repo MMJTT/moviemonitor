@@ -7,12 +7,6 @@ from django.db import transaction
 from django.utils import timezone
 
 from core.models import AgentMailConfig
-from core.services.agent_mail import (
-    AgentMailConfigError,
-    safe_agent_mail_error_code,
-    test_agent_mail_config,
-    verify_agent_mail,
-)
 from core.services.coordination import notify_worker
 
 
@@ -20,6 +14,18 @@ from core.services.coordination import notify_worker
 class MailVerificationClaim:
     token: uuid.UUID
     requested_at: datetime
+
+
+def test_agent_mail_config(config):
+    from core.services.agent_mail import test_agent_mail_config as run_transport_test
+
+    return run_transport_test(config)
+
+
+def verify_agent_mail():
+    from core.services.agent_mail import verify_agent_mail as run_transport_verification
+
+    return run_transport_verification()
 
 
 def request_mail_verification(now: datetime | None = None) -> None:
@@ -119,8 +125,12 @@ def _run_verification(call, *, require_queued: bool = False) -> tuple[bool, str]
     try:
         result = call()
         if require_queued and result != "queued":
+            from core.services.agent_mail import AgentMailConfigError
+
             raise AgentMailConfigError("agent-mail-message-not-queued")
     except Exception as error:
+        from core.services.agent_mail import safe_agent_mail_error_code
+
         return False, safe_agent_mail_error_code(error)
     return True, ""
 

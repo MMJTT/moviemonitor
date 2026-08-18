@@ -4,6 +4,8 @@ from django.core.validators import MinValueValidator
 from django.db import models
 from django.db.models import Q
 
+from core.mail_constants import AGENT_MAIL_RECIPIENT, AGENT_MAIL_SENDER
+
 
 class SingletonModel(models.Model):
     id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
@@ -53,8 +55,8 @@ class AgentMailConfig(SingletonModel):
         VERIFIED = "VERIFIED", "已验证"
         FAILED = "FAILED", "验证失败"
 
-    sender_email = models.EmailField(default="mijiatong@agent.qq.com", editable=False)
-    recipient_email = models.EmailField(default="850634546@qq.com", editable=False)
+    sender_email = models.EmailField(default=AGENT_MAIL_SENDER, editable=False)
+    recipient_email = models.EmailField(default=AGENT_MAIL_RECIPIENT, editable=False)
     is_verified = models.BooleanField(default=False)
     verified_at = models.DateTimeField(null=True, blank=True)
     verification_status = models.CharField(

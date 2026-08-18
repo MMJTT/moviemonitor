@@ -1,4 +1,9 @@
+import os
+import subprocess
+import sys
+import textwrap
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from django.urls import reverse
@@ -8,6 +13,52 @@ from core.models import AgentMailConfig, RuntimeState
 
 SENDER = "mijiatong@agent.qq.com"
 RECIPIENT = "850634546@qq.com"
+
+
+def test_web_modules_import_without_agent_mail_transport():
+    script = textwrap.dedent(
+        """
+        import importlib.abc
+        import os
+        import sys
+
+        os.environ.setdefault("DJANGO_SETTINGS_MODULE", "ticketwatch.settings")
+        import django
+        django.setup()
+
+        class RejectAgentMail(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == "core.services.agent_mail":
+                    raise ImportError("Agent Mail transport is unavailable in Web")
+                return None
+
+        sys.modules.pop("core.services.agent_mail", None)
+        sys.meta_path.insert(0, RejectAgentMail())
+
+        try:
+            import core.services.agent_mail
+        except ImportError:
+            pass
+        else:
+            raise AssertionError("transport import blocker is inactive")
+
+        import core.views
+        import core.services.tasks
+        """
+    )
+    environment = os.environ.copy()
+    environment["DJANGO_SETTINGS_MODULE"] = "ticketwatch.settings"
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).resolve().parents[2],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.django_db

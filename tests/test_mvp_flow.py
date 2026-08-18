@@ -17,9 +17,10 @@ from core.models import (
     Notification,
     RuntimeState,
 )
-from core.scheduler import run_due_work, set_process_scheduler
+from core.scheduler import set_process_scheduler
 from core.services.mail_verification import process_mail_verification
 from core.services.tasks import perform_check
+from core.worker import run_due_work
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "maoyan"
 VALID_URL = "https://www.maoyan.com/cinemas?movieId=1545360&showDate=2026-08-20"

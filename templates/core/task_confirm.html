@@ -24,7 +24,7 @@
         <fieldset>
           <legend>当前可见影院 <small>选择一家</small></legend>
           {% for cinema in payload.cinemas %}
-            <label class="choice"><input type="radio" name="cinema_id" value="{{ cinema.id }}">{{ cinema.name }}</label>
+            <label class="choice"><input type="radio" name="cinema_id" value="{{ cinema.id }}"{% if form.cinema_id.value == cinema.id %} checked{% endif %}>{{ cinema.name }}</label>
           {% endfor %}
         </fieldset>
       {% endif %}
