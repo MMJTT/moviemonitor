@@ -264,3 +264,19 @@ def test_database_startup_waits_before_no_deps_migration():
     assert DOCUMENT.count(
         "docker compose --env-file /opt/ticketwatch/.env up -d --wait postgres redis"
     ) == 2
+
+
+def test_one_off_run_uses_compose_226_compatible_local_images():
+    run_commands = []
+    for command in _bash_commands(DOCUMENT):
+        tokens = shlex.split(command)
+        if "docker" not in tokens or "compose" not in tokens or "run" not in tokens:
+            continue
+        run_commands.append(tokens)
+        assert "--pull" not in tokens
+        assert "--no-build" not in tokens
+        assert "--build" not in tokens
+
+    assert run_commands
+    assert "Compose 2.26" in DOCUMENT
+    assert "docker image inspect" in DOCUMENT

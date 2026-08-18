@@ -239,6 +239,8 @@ sudo chmod 0600 local.manifest.json SHA256SUMS
 
 严格按此顺序启动。离线发布先把已核验的 release 镜像标记为 Compose 的固定应用镜像名；`.env` 中的 `COMPOSE_PROJECT_NAME=ticketwatch` 保证这些名字不随检出目录变化。`loaddata` 通过标准输入从只读临时 bind mount 读取，避免在 `0751` 暂存目录中枚举文件；在 manifest 逐字一致前不要启动 Worker。Web 不挂载 `/opt/ticketwatch/data/agently` 或 `/home/ticketwatch`，也不接收任何 `AGENTLY_*` 环境变量；Web 容器绝不运行 `agently-cli`。只有 Worker 挂载 Linux keyring 和 Agent Mail 数据目录，并接收 `AGENTLY_WORKSPACE` 与 keyring 密码。
 
+Alibaba Cloud Linux 上安装的 Compose 2.26 不支持给 `docker compose run` 传 `--pull` 或 `--no-build`。因此每次 one-off `run` 前都先用 `config --images` 和 `docker image inspect` 确认固定镜像已经存在，并且绝不传 `--build`；这样 `run` 只使用本地已核验镜像。长期服务的 `up` 支持并继续强制使用 `--pull never --no-build`。
+
 ```bash
 cd /opt/ticketwatch/app
 RELEASE_MANIFEST=/opt/ticketwatch/migration-data/release-manifest.env
@@ -253,18 +255,18 @@ docker compose --env-file /opt/ticketwatch/.env config --images | grep -qx ticke
 docker compose --env-file /opt/ticketwatch/.env config --images | grep -qx ticketwatch-worker
 docker image inspect ticketwatch-web ticketwatch-worker >/dev/null
 docker compose --env-file /opt/ticketwatch/.env up -d --wait postgres redis --pull never --no-build
-docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps --pull never --no-build web python manage.py migrate
-docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps --pull never --no-build --volume /opt/ticketwatch/migration-data:/migration:ro web sh -ec 'python manage.py loaddata --format=json - < /migration/core-data.json'
-docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps --pull never --no-build web sh -ec 'python manage.py data_manifest --output /tmp/server.manifest.json >/dev/null && cat /tmp/server.manifest.json' > /opt/ticketwatch/migration-data/server.manifest.json
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web python manage.py migrate
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps --volume /opt/ticketwatch/migration-data:/migration:ro web sh -ec 'python manage.py loaddata --format=json - < /migration/core-data.json'
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web sh -ec 'python manage.py data_manifest --output /tmp/server.manifest.json >/dev/null && cat /tmp/server.manifest.json' > /opt/ticketwatch/migration-data/server.manifest.json
 if ! cmp -s /opt/ticketwatch/migration-data/local.manifest.json /opt/ticketwatch/migration-data/server.manifest.json; then
   echo 'manifest mismatch; preserve both files and keep Worker stopped' >&2
   exit 1
 fi
-docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps --pull never --no-build web python manage.py showmigrations core
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web python manage.py showmigrations core
 docker compose --env-file /opt/ticketwatch/.env up -d --pull never --no-build web
 curl --fail http://127.0.0.1:8000/healthz
-docker compose --env-file /opt/ticketwatch/.env run --rm --pull never --no-build worker agently-cli auth login
-docker compose --env-file /opt/ticketwatch/.env run --rm --pull never --no-build worker python manage.py agent_mail_preflight --send-test
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps worker agently-cli auth login
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps worker python manage.py agent_mail_preflight --send-test
 docker compose --env-file /opt/ticketwatch/.env up -d --pull never --no-build worker
 docker compose --env-file /opt/ticketwatch/.env ps
 curl --fail http://127.0.0.1:8000/statusz
@@ -274,9 +276,9 @@ ss -lntp
 若 `cmp` 失败，保留两个 manifest、停止 Worker 并调查各业务模型摘要；不要向已填充的数据库再跑 `loaddata`。`showmigrations` 必须显示 `[X] 0009_agent_mail_verification_retry`。Agent Mail 登录是 Worker Linux/keyring 中的交互设备授权；不得把长期明文访问令牌写入 `.env`。预检会发真实测试邮件。授权后确认凭据跨重启保存：
 
 ```bash
-docker compose --env-file /opt/ticketwatch/.env run --rm --pull never --no-build worker agently-cli +me
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps worker agently-cli +me
 docker compose --env-file /opt/ticketwatch/.env restart worker
-docker compose --env-file /opt/ticketwatch/.env run --rm --pull never --no-build worker agently-cli +me
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps worker agently-cli +me
 ```
 
 若身份不正确或凭据不能跨重启，保持 Worker 停止并回到设计评审。
@@ -387,11 +389,11 @@ test "$(git rev-parse HEAD)" = "$NEW_SHA"
 docker image tag "$NEW_WEB_IMAGE" "$WEB_IMAGE_REF"
 docker image tag "$NEW_WORKER_IMAGE" "$WORKER_IMAGE_REF"
 docker compose --env-file /opt/ticketwatch/.env up -d --wait postgres redis --pull never --no-build
-docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps --pull never --no-build web python manage.py migrate
-docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps --pull never --no-build web python manage.py showmigrations core | grep -F '[X] 0009_agent_mail_verification_retry'
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web python manage.py migrate
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web python manage.py showmigrations core | grep -F '[X] 0009_agent_mail_verification_retry'
 docker compose --env-file /opt/ticketwatch/.env up -d --no-deps --pull never --no-build web
 curl --fail http://127.0.0.1:8000/healthz
-docker compose --env-file /opt/ticketwatch/.env run --rm --pull never --no-build worker python manage.py agent_mail_preflight
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps worker python manage.py agent_mail_preflight
 docker compose --env-file /opt/ticketwatch/.env up -d --no-deps --pull never --no-build worker
 curl --fail http://127.0.0.1:8000/statusz
 ```
@@ -407,7 +409,7 @@ docker compose --env-file /opt/ticketwatch/.env exec -T web sh -ec '! command -v
 docker compose --env-file /opt/ticketwatch/.env exec -T worker sh -ec 'test "$(id -u):$(id -g)" = 10001:10001; command -v agently-cli >/dev/null'
 docker compose --env-file /opt/ticketwatch/.env exec -T redis redis-cli ping | grep -qx PONG
 docker compose --env-file /opt/ticketwatch/.env restart worker
-docker compose --env-file /opt/ticketwatch/.env run --rm --pull never --no-build worker python manage.py agent_mail_preflight
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps worker python manage.py agent_mail_preflight
 curl --fail http://127.0.0.1:8000/statusz
 ./deploy/backup-postgres.sh
 LATEST_BACKUP=$(find /opt/ticketwatch/data/backups -maxdepth 1 -type f -name 'ticketwatch-*.sql.gz' -printf '%T@ %p\n' | sort -n | tail -n 1 | cut -d' ' -f2-)
@@ -456,7 +458,7 @@ docker image tag "$WEB_IMAGE_ID" "$WEB_IMAGE_REF"
 docker image tag "$WORKER_IMAGE_ID" "$WORKER_IMAGE_REF"
 docker compose --env-file /opt/ticketwatch/.env up -d --pull never --no-build --no-deps web
 curl --fail http://127.0.0.1:8000/healthz
-docker compose --env-file /opt/ticketwatch/.env run --rm --pull never --no-build worker python manage.py agent_mail_preflight
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps worker python manage.py agent_mail_preflight
 docker compose --env-file /opt/ticketwatch/.env up -d --pull never --no-build --no-deps worker
 curl --fail http://127.0.0.1:8000/statusz
 ```
@@ -513,7 +515,7 @@ RECORD_TMP=
 trap - EXIT
 docker compose --env-file /opt/ticketwatch/.env stop worker web
 gzip -dc -- "$BACKUP" | docker compose --env-file /opt/ticketwatch/.env exec -T postgres sh -ec 'dropdb --if-exists --no-password --username "$POSTGRES_USER" "$POSTGRES_DB"; createdb --no-password --username "$POSTGRES_USER" "$POSTGRES_DB"; pg_restore --exit-on-error --no-owner --no-acl --no-password --username "$POSTGRES_USER" --dbname "$POSTGRES_DB"'
-docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps --pull never --no-build web python manage.py migrate
+docker compose --env-file /opt/ticketwatch/.env run --rm --no-deps web python manage.py migrate
 docker compose --env-file /opt/ticketwatch/.env up -d --pull never --no-build --no-deps web worker
 curl --fail http://127.0.0.1:8000/statusz
 ```
