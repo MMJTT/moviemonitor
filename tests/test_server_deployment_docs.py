@@ -9,6 +9,25 @@ DOCUMENT = (Path(__file__).resolve().parents[1] / "docs" / "server-deployment.md
 )
 AGENT_MAIL_HOST_ROOT = "/opt/ticketwatch/data/agently"
 AGENT_MAIL_CONTAINER_ROOT = "/home/ticketwatch"
+OBSOLETE_RELEASE_SHA = "49b4549308c056db07a44174983ac86e9d73552b"
+OFFLINE_RELEASE_MARKERS = (
+    "RELEASE_MANIFEST",
+    "git bundle verify",
+    "git bundle list-heads",
+    "shasum -a 256",
+    "sha256sum -c",
+    "--platform linux/amd64",
+    "ticketwatch-release-web:$RELEASE_SHA",
+    "ticketwatch-release-worker:$RELEASE_SHA",
+    "postgres:16-bookworm",
+    "redis:7-alpine",
+    "docker save",
+    "docker load",
+    "{{.Id}} {{.Os}}/{{.Architecture}}",
+    "--pull never --no-build",
+    "python manage.py migrate",
+    "RECORD='/opt/ticketwatch/data/upgrade-records/REPLACE_WITH_SELECTED_RECORD.env'",
+)
 
 
 def _is_equal_or_descendant(candidate, root):
@@ -82,6 +101,12 @@ def _assert_document_has_no_web_agent_mail_mount(document):
     assert offenders == []
 
 
+def _assert_offline_release_contract(document):
+    assert OBSOLETE_RELEASE_SHA not in document
+    for marker in OFFLINE_RELEASE_MARKERS:
+        assert marker in document
+
+
 def test_macos_checksum_and_contexts_are_copyable():
     assert "(cd migration-data && shasum -a 256" in DOCUMENT
     assert "在 **Mac** 执行：" in DOCUMENT
@@ -117,6 +142,20 @@ def test_private_deployment_and_environment_invariants_are_documented():
     assert "sudo test -f /opt/ticketwatch/.env && sudo test ! -L" in DOCUMENT
     assert "TICKETWATCH_ENV_FILE=/opt/ticketwatch/.env" in DOCUMENT
     assert "AGENTLY_DATA_DIR=/opt/ticketwatch/data/agently" in DOCUMENT
+
+
+def test_offline_release_transport_is_complete_and_not_tied_to_an_old_sha():
+    _assert_offline_release_contract(DOCUMENT)
+
+
+def test_release_contract_rejects_obsolete_sha_and_missing_offline_step():
+    with pytest.raises(AssertionError):
+        _assert_offline_release_contract(
+            DOCUMENT + f"\nRELEASE_SHA='{OBSOLETE_RELEASE_SHA}'\n"
+        )
+    for marker in OFFLINE_RELEASE_MARKERS:
+        with pytest.raises(AssertionError):
+            _assert_offline_release_contract(DOCUMENT.replace(marker, ""))
 
 
 def test_upgrade_rollback_and_incident_evidence_are_persistent():
@@ -170,7 +209,7 @@ def test_weekly_mac_copy_checks_source_and_destination_hashes():
 
 
 def test_worker_owned_mail_attestation_rollout_is_documented():
-    assert "core.0008_agent_mail_verification_state" in DOCUMENT
+    assert "core.0009_agent_mail_verification_retry" in DOCUMENT
     assert "Worker 启动时先执行一次身份验证并写入有时效的验证证明" in DOCUMENT
     assert "Web 容器绝不运行 `agently-cli`" in DOCUMENT
     assert "验证按钮只把 Worker 请求持久化到 PostgreSQL" in DOCUMENT

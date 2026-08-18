@@ -84,8 +84,36 @@ def compose_config():
     return json.loads(result.stdout)
 
 
+@pytest.fixture(scope="module")
+def compose_images():
+    if shutil.which("docker") is None:
+        pytest.skip("requires Docker Compose CLI")
+
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            ".env.example",
+            "config",
+            "--images",
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return set(result.stdout.splitlines())
+
+
 def test_compose_has_exactly_four_production_services(compose_config):
     assert set(compose_config["services"]) == {"web", "worker", "postgres", "redis"}
+
+
+def test_compose_application_image_names_do_not_depend_on_checkout_directory(
+    compose_images,
+):
+    assert {"ticketwatch-web", "ticketwatch-worker"} <= compose_images
 
 
 def test_web_has_no_agent_mail_home_or_credentials_mount(compose_config):
