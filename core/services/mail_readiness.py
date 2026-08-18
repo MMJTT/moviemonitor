@@ -31,7 +31,8 @@ def mail_readiness(now: datetime | None = None) -> MailReadiness:
     ):
         return MailReadiness(False, "mail-unverified")
     ttl = timedelta(seconds=settings.AGENT_MAIL_ATTESTATION_TTL_SECONDS)
-    if config.verified_at < now - ttl:
+    age = now - config.verified_at
+    if not timedelta(0) <= age <= ttl:
         return MailReadiness(False, "mail-attestation-stale")
     state = RuntimeState.objects.filter(pk=1).first()
     if not worker_heartbeat_is_fresh(state, now):

@@ -63,6 +63,19 @@ def test_mail_readiness_rejects_stale_attestation(settings):
     assert mail_readiness(now=now) == MailReadiness(False, "mail-attestation-stale")
 
 
+@pytest.mark.django_db
+@freeze_time("2026-08-18 10:00:00+00:00")
+def test_mail_readiness_rejects_future_attestation_timestamp():
+    """Accepting a future proof would let clock skew extend its validity indefinitely."""
+    now = timezone.now()
+    config = _verified_config(now)
+    config.verified_at = now + timedelta(microseconds=1)
+    config.save()
+    RuntimeState.objects.create(worker_heartbeat_at=now)
+
+    assert mail_readiness(now=now) == MailReadiness(False, "mail-attestation-stale")
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

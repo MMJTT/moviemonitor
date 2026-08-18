@@ -10,6 +10,8 @@ from redis.exceptions import RedisError
 
 from core.models import AgentMailConfig, CheckRun, MonitorTask, Notification, RuntimeState
 
+BACKUP_STALE_AFTER = timedelta(hours=36)
+
 
 def _iso_datetime(value):
     if value is None:
@@ -52,11 +54,16 @@ def _worker_status(state, now):
     }
 
 
-def _backup_status(state):
+def _backup_status(state, now):
     last_at = state.last_backup_at if state else None
     name = _safe_backup_name(state.last_backup_name if state else None)
+    if last_at is None or name is None:
+        status = "missing"
+    else:
+        age = now - last_at
+        status = "ok" if timedelta(0) <= age <= BACKUP_STALE_AFTER else "stale"
     return {
-        "status": "ok" if last_at is not None and name is not None else "missing",
+        "status": status,
         "last_at": _iso_datetime(last_at),
         "name": name,
     }
@@ -107,7 +114,7 @@ def _database_status(now):
         },
         "tasks": task_counts,
         "last_check_at": _iso_datetime(last_check_at),
-        "backup": _backup_status(state),
+        "backup": _backup_status(state, now),
     }
 
 

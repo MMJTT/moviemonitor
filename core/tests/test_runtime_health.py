@@ -11,7 +11,11 @@ from freezegun import freeze_time
 from redis.exceptions import ConnectionError
 
 from core.models import AgentMailConfig, CheckRun, MonitorTask, Notification, RuntimeState
-from core.services.runtime_health import collect_runtime_status, record_worker_heartbeat
+from core.services.runtime_health import (
+    _backup_status,
+    collect_runtime_status,
+    record_worker_heartbeat,
+)
 from core.worker import WorkerLoop
 
 DiskUsage = namedtuple("DiskUsage", ["total", "used", "free"])
@@ -146,6 +150,25 @@ def test_worker_status_uses_bounded_scan_interval_staleness(
     )
 
     assert collect_runtime_status(now=now)["worker"]["status"] == expected
+
+
+@pytest.mark.parametrize(
+    ("backup_age", "expected"),
+    [
+        (timedelta(hours=36), "ok"),
+        (timedelta(hours=36, microseconds=1), "stale"),
+        (timedelta(microseconds=-1), "stale"),
+    ],
+)
+def test_backup_status_reports_daily_backup_staleness(backup_age, expected):
+    """Treating every historical timestamp as healthy would hide a stopped timer."""
+    now = timezone.now()
+    state = RuntimeState(
+        last_backup_at=now - backup_age,
+        last_backup_name="ticketwatch-20260818T032000Z.sql.gz",
+    )
+
+    assert _backup_status(state, now)["status"] == expected
 
 
 @freeze_time("2026-08-17 10:00:00+00:00")
