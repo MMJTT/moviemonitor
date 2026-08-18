@@ -5,6 +5,7 @@ import pytest
 from django.utils import timezone
 
 from core.models import AgentMailConfig, MonitorTask, Notification
+from core.services import notifications as notification_service
 from core.services.agent_mail import (
     AgentMailAuthError,
     AgentMailConfigError,
@@ -244,6 +245,61 @@ def test_notification_recipient_drift_is_rejected_before_cli(
     assert opening_notification.last_error == "agent-mail-config-error"
     verify.assert_not_called()
     run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        AgentMailUncertainError("private provider response"),
+        AgentMailAuthError("private OAuth token"),
+        AgentMailConfigError("private keyring path"),
+        AgentMailTemporaryError("private network endpoint"),
+        RuntimeError("private unexpected detail"),
+    ],
+)
+@pytest.mark.django_db
+def test_proof_invalidating_transition_rolls_back_when_revocation_fails(
+    opening_notification, verified_mail, mocker, error
+):
+    """Committing either half would leave notification and proof state contradictory."""
+    now = timezone.now()
+    completed_at = now - timedelta(hours=1)
+    AgentMailConfig.objects.filter(pk=verified_mail.pk).update(
+        verification_completed_at=completed_at,
+        last_error="",
+        updated_at=completed_at,
+    )
+    real_revoke = notification_service._revoke_mail_attestation
+
+    def revoke_then_fail(error_code, failed_at):
+        real_revoke(error_code, failed_at)
+        raise RuntimeError("injected revocation persistence failure")
+
+    mocker.patch(
+        "core.services.notifications.send_agent_mail",
+        side_effect=error,
+    )
+    mocker.patch(
+        "core.services.notifications._revoke_mail_attestation",
+        side_effect=revoke_then_fail,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="injected revocation persistence failure",
+    ):
+        deliver_notification(opening_notification.pk, now=now)
+
+    opening_notification.refresh_from_db()
+    verified_mail.refresh_from_db()
+    assert opening_notification.status == Notification.Status.SENDING
+    assert opening_notification.next_attempt_at is None
+    assert opening_notification.last_error == ""
+    assert verified_mail.is_verified is True
+    assert verified_mail.verified_at is not None
+    assert verified_mail.verification_status == AgentMailConfig.VerificationStatus.VERIFIED
+    assert verified_mail.verification_completed_at == completed_at
+    assert verified_mail.last_error == ""
 
 
 @pytest.mark.django_db

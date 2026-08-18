@@ -196,8 +196,8 @@ def _park_for_mail_repair(notification_id, error, *, unverify_mail, now=None):
                     "updated_at",
                 ]
             )
-    if unverify_mail:
-        _revoke_mail_attestation(error, now)
+        if unverify_mail:
+            _revoke_mail_attestation(error, now)
 
 
 def _reschedule_notification(notification_id, error, now):
@@ -291,8 +291,9 @@ def deliver_notification(notification_id, now=None):
         )
     except AgentMailUncertainError as exc:
         error = safe_agent_mail_error_code(exc)
-        _mark_notification_needs_review(notification_id, error)
-        _revoke_mail_attestation(error, now)
+        with transaction.atomic():
+            _mark_notification_needs_review(notification_id, error)
+            _revoke_mail_attestation(error, now)
         return
     except (AgentMailAuthError, AgentMailConfigError) as exc:
         _park_for_mail_repair(
@@ -304,8 +305,9 @@ def deliver_notification(notification_id, now=None):
         return
     except AgentMailTemporaryError as exc:
         error = safe_agent_mail_error_code(exc)
-        _reschedule_notification(notification_id, error, now)
-        _revoke_mail_attestation(error, now)
+        with transaction.atomic():
+            _reschedule_notification(notification_id, error, now)
+            _revoke_mail_attestation(error, now)
         return
     except AgentMailPermanentError as exc:
         _fail_notification_permanently(

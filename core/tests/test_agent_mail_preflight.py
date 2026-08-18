@@ -285,3 +285,87 @@ def test_send_test_failure_preserves_request_created_during_cli(mocker):
     assert config.verification_requested_at == requested_at
     assert config.verification_claim_token is not None
     assert config.verification_claim_expires_at is not None
+
+
+@pytest.mark.django_db
+def test_preflight_does_not_mutate_existing_claimed_request(mocker):
+    """An unconditional reset would erase a request already owned by the Worker."""
+    now = timezone.now()
+    config = AgentMailConfig.get_solo()
+    requested_at = now - timedelta(seconds=1)
+    completed_at = now - timedelta(hours=2)
+    token = uuid.uuid4()
+    expires_at = now + timedelta(minutes=2)
+    updated_at = now - timedelta(seconds=1)
+    AgentMailConfig.objects.filter(pk=config.pk).update(
+        is_verified=True,
+        verified_at=now - timedelta(hours=1),
+        verification_status=AgentMailConfig.VerificationStatus.PENDING,
+        verification_requested_at=requested_at,
+        verification_completed_at=completed_at,
+        verification_claim_token=token,
+        verification_claim_expires_at=expires_at,
+        last_error="old-safe-error",
+        updated_at=updated_at,
+    )
+    before = AgentMailConfig.objects.filter(pk=config.pk).values().get()
+    verify = mocker.patch(
+        "core.management.commands.agent_mail_preflight.verify_agent_mail"
+    )
+    send_test = mocker.patch(
+        "core.management.commands.agent_mail_preflight.test_agent_mail_config"
+    )
+
+    with pytest.raises(CommandError, match="agent-mail-preflight-failed"):
+        call_command("agent_mail_preflight", stdout=StringIO())
+
+    after = AgentMailConfig.objects.filter(pk=config.pk).values().get()
+    assert after == before
+    verify.assert_not_called()
+    send_test.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_preflight_reset_preserves_request_racing_after_initial_read(mocker):
+    """Ignoring captured updated_at would erase a request created before reset."""
+    now = timezone.now()
+    config = AgentMailConfig.get_solo()
+    AgentMailConfig.objects.filter(pk=config.pk).update(
+        verification_status=AgentMailConfig.VerificationStatus.FAILED,
+        updated_at=now - timedelta(seconds=1),
+    )
+    original_get_solo = AgentMailConfig.get_solo
+    requested_at = now
+    token = uuid.uuid4()
+    expires_at = now + timedelta(minutes=2)
+
+    def read_then_request():
+        stale = original_get_solo()
+        AgentMailConfig.objects.filter(pk=stale.pk).update(
+            verification_status=AgentMailConfig.VerificationStatus.PENDING,
+            verification_requested_at=requested_at,
+            verification_claim_token=token,
+            verification_claim_expires_at=expires_at,
+            updated_at=now,
+        )
+        return stale
+
+    mocker.patch.object(AgentMailConfig, "get_solo", side_effect=read_then_request)
+    verify = mocker.patch(
+        "core.management.commands.agent_mail_preflight.verify_agent_mail"
+    )
+    send_test = mocker.patch(
+        "core.management.commands.agent_mail_preflight.test_agent_mail_config"
+    )
+
+    with pytest.raises(CommandError, match="agent-mail-preflight-failed"):
+        call_command("agent_mail_preflight", "--send-test", stdout=StringIO())
+
+    config.refresh_from_db()
+    assert config.verification_status == AgentMailConfig.VerificationStatus.PENDING
+    assert config.verification_requested_at == requested_at
+    assert config.verification_claim_token == token
+    assert config.verification_claim_expires_at == expires_at
+    assert config.updated_at == now
+    verify.assert_not_called()
+    send_test.assert_not_called()

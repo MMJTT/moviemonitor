@@ -29,17 +29,27 @@ class Command(BaseCommand):
     @staticmethod
     def _reset_verification(config):
         now = timezone.now()
-        AgentMailConfig.objects.filter(pk=config.pk).update(
-            is_verified=False,
-            verified_at=None,
-            verification_status=AgentMailConfig.VerificationStatus.FAILED,
-            verification_completed_at=now,
-            verification_claim_token=None,
-            verification_claim_expires_at=None,
-            last_error="agent-mail-preflight-failed",
-            updated_at=now,
+        updated = (
+            AgentMailConfig.objects.filter(
+                pk=config.pk,
+                updated_at=config.updated_at,
+            )
+            .exclude(verification_status=AgentMailConfig.VerificationStatus.PENDING)
+            .update(
+                is_verified=False,
+                verified_at=None,
+                verification_status=AgentMailConfig.VerificationStatus.FAILED,
+                verification_completed_at=now,
+                verification_claim_token=None,
+                verification_claim_expires_at=None,
+                last_error="agent-mail-preflight-failed",
+                updated_at=now,
+            )
         )
+        if updated != 1:
+            return False
         config.refresh_from_db()
+        return True
 
     @staticmethod
     def _mark_verified(config):
@@ -85,7 +95,10 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         config = AgentMailConfig.get_solo()
-        self._reset_verification(config)
+        if not self._reset_verification(config):
+            raise CommandError(
+                "Agent Mail preflight failed: agent-mail-preflight-failed"
+            )
         if not options["send_test"]:
             try:
                 verify_agent_mail()
