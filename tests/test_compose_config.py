@@ -1,12 +1,33 @@
+import copy
 import json
 import os
 import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+AGENT_MAIL_HOST_ROOT = "/tmp/ticketwatch-contract-agently"
+AGENT_MAIL_CONTAINER_ROOT = "/home/ticketwatch"
+
+
+def _is_equal_or_descendant(candidate, root):
+    if not isinstance(candidate, str):
+        return False
+    candidate_path = PurePosixPath(candidate)
+    root_path = PurePosixPath(root)
+    return candidate_path == root_path or root_path in candidate_path.parents
+
+
+def _assert_web_has_no_agent_mail_mounts(web_volumes):
+    for volume in web_volumes:
+        assert not _is_equal_or_descendant(
+            volume.get("source"), AGENT_MAIL_HOST_ROOT
+        )
+        assert not _is_equal_or_descendant(
+            volume.get("target"), AGENT_MAIL_CONTAINER_ROOT
+        )
 
 
 @pytest.fixture(scope="module")
@@ -49,11 +70,59 @@ def test_compose_has_exactly_four_production_services(compose_config):
 def test_web_has_no_agent_mail_home_or_credentials_mount(compose_config):
     web_volumes = compose_config["services"]["web"].get("volumes", [])
 
-    assert all(volume["target"] != "/home/ticketwatch" for volume in web_volumes)
-    assert all(
-        volume.get("source") != "/tmp/ticketwatch-contract-agently"
-        for volume in web_volumes
-    )
+    _assert_web_has_no_agent_mail_mounts(web_volumes)
+
+
+@pytest.mark.parametrize(
+    "agent_mail_bind",
+    [
+        {
+            "type": "bind",
+            "source": "/tmp/ticketwatch-contract-agently",
+            "target": "/tmp/web-agent-mail",
+            "bind": {"create_host_path": False},
+        },
+        {
+            "type": "bind",
+            "source": "/tmp/ticketwatch-contract-agently/.local/share/keyrings",
+            "target": "/tmp/web-keyrings",
+            "bind": {"create_host_path": False},
+        },
+        {
+            "type": "bind",
+            "source": "/tmp/web-agent-mail",
+            "target": "/home/ticketwatch",
+            "bind": {"create_host_path": False},
+        },
+        {
+            "type": "bind",
+            "source": "/tmp/web-keyrings",
+            "target": "/home/ticketwatch/.local/share/keyrings",
+            "bind": {"create_host_path": False},
+        },
+    ],
+)
+def test_web_agent_mail_bind_is_rejected(compose_config, agent_mail_bind):
+    mutated_config = copy.deepcopy(compose_config)
+    mutated_config["services"]["web"]["volumes"] = [agent_mail_bind]
+
+    with pytest.raises(AssertionError):
+        _assert_web_has_no_agent_mail_mounts(
+            mutated_config["services"]["web"]["volumes"]
+        )
+
+
+def test_agent_mail_path_containment_does_not_match_same_prefix_siblings():
+    web_volumes = [
+        {
+            "type": "bind",
+            "source": "/tmp/ticketwatch-contract-agently-backup",
+            "target": "/home/ticketwatch-cache",
+            "bind": {"create_host_path": False},
+        }
+    ]
+
+    _assert_web_has_no_agent_mail_mounts(web_volumes)
 
 
 def test_worker_agent_mail_home_requires_preprovisioned_bind(compose_config):
