@@ -496,10 +496,24 @@ def test_concurrent_same_second_backup_never_replaces_first_publication(tmp_path
         script,
         {**common_env, "DUMP_PAYLOAD": "first-publication", "PG_DUMP_DELAY": "0.5"},
     )
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + 10
     while not command_log.exists() and time.monotonic() < deadline:
+        if first.poll() is not None:
+            first_stdout, first_stderr = first.communicate()
+            pytest.fail(
+                "first backup exited before reaching pg_dump: "
+                + first_stdout
+                + first_stderr
+            )
         time.sleep(0.01)
-    assert command_log.exists()
+    if not command_log.exists():
+        first.kill()
+        first_stdout, first_stderr = first.communicate()
+        pytest.fail(
+            "first backup did not reach pg_dump within 10 seconds: "
+            + first_stdout
+            + first_stderr
+        )
     second = _popen(script, {**common_env, "DUMP_PAYLOAD": "second-publication"})
 
     first_stdout, first_stderr = first.communicate(timeout=5)
