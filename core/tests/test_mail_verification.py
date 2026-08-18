@@ -452,3 +452,87 @@ def test_periodic_completion_cannot_overwrite_concurrent_manual_request(settings
     assert config.verification_status == AgentMailConfig.VerificationStatus.PENDING
     assert config.verification_requested_at == requested_at
     assert config.verification_completed_at == now - timedelta(hours=6)
+
+
+@pytest.mark.django_db
+def test_live_pending_claim_does_not_fall_through_to_identity_verification(
+    settings, mocker
+):
+    """Falling through after a lost claim would busy-loop and duplicate Agent Mail I/O."""
+    settings.AGENT_MAIL_CLAIM_SECONDS = 120
+    now = timezone.now()
+    request_mail_verification(now=now)
+    owner = _claim_pending_verification(now=now)
+    send_test = mocker.patch("core.services.mail_verification.test_agent_mail_config")
+    verify = mocker.patch("core.services.mail_verification.verify_agent_mail")
+
+    assert owner is not None
+    assert process_mail_verification(now=now + timedelta(seconds=1)) is False
+
+    send_test.assert_not_called()
+    verify.assert_not_called()
+    config = AgentMailConfig.get_solo()
+    assert config.verification_status == AgentMailConfig.VerificationStatus.PENDING
+    assert config.verification_claim_token == owner.token
+
+
+@pytest.mark.django_db
+def test_pending_without_request_is_repaired_once_without_cli_loop(mocker):
+    """Leaving malformed PENDING state intact would keep every Worker scan busy."""
+    now = timezone.now()
+    config = AgentMailConfig.get_solo()
+    AgentMailConfig.objects.filter(pk=config.pk).update(
+        is_verified=True,
+        verified_at=now - timedelta(hours=1),
+        verification_status=AgentMailConfig.VerificationStatus.PENDING,
+        verification_requested_at=None,
+        verification_completed_at=None,
+        verification_claim_token=uuid.uuid4(),
+        verification_claim_expires_at=now + timedelta(minutes=2),
+        last_error="old-error",
+        updated_at=now - timedelta(minutes=1),
+    )
+    send_test = mocker.patch("core.services.mail_verification.test_agent_mail_config")
+    verify = mocker.patch("core.services.mail_verification.verify_agent_mail")
+
+    assert process_mail_verification(now=now) is False
+
+    config.refresh_from_db()
+    assert config.is_verified is False
+    assert config.verified_at is None
+    assert config.verification_status == AgentMailConfig.VerificationStatus.FAILED
+    assert config.verification_completed_at == now
+    assert config.verification_claim_token is None
+    assert config.verification_claim_expires_at is None
+    assert config.last_error == "agent-mail-config-error"
+    assert process_mail_verification(now=now + timedelta(seconds=1)) is False
+    send_test.assert_not_called()
+    verify.assert_not_called()
+
+
+@pytest.mark.parametrize("future_offset", [timedelta(seconds=1), timedelta(days=365)])
+@pytest.mark.django_db
+def test_future_completion_timestamp_is_due_for_identity_check(
+    settings, mocker, future_offset
+):
+    """Throttling negative ages would let clock skew suppress verification indefinitely."""
+    settings.AGENT_MAIL_REVERIFY_SECONDS = 21600
+    now = timezone.now()
+    config = AgentMailConfig.get_solo()
+    AgentMailConfig.objects.filter(pk=config.pk).update(
+        is_verified=True,
+        verified_at=now - timedelta(hours=1),
+        verification_status=AgentMailConfig.VerificationStatus.VERIFIED,
+        verification_completed_at=now + future_offset,
+        updated_at=now - timedelta(minutes=1),
+    )
+    verify = mocker.patch(
+        "core.services.mail_verification.verify_agent_mail",
+        return_value=config.sender_email,
+    )
+
+    assert process_mail_verification(now=now) is True
+
+    verify.assert_called_once_with()
+    config.refresh_from_db()
+    assert config.verification_completed_at == now

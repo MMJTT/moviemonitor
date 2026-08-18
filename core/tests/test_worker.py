@@ -3,12 +3,14 @@ import signal
 import threading
 import uuid
 
+import pytest
 from django.utils import timezone
 from redis.exceptions import ConnectionError
 
+from core.models import AgentMailConfig, Notification
 from core.services.coordination import notify_worker, wait_for_worker
 from core.services.leases import TaskClaim
-from core.worker import WorkerLoop, run_due_work
+from core.worker import WorkerLoop, run_worker_due_work
 
 
 def test_notify_worker_returns_false_when_redis_is_unconfigured(settings):
@@ -123,7 +125,7 @@ def test_worker_runs_mail_verification_expiry_notifications_then_one_claim(mocke
         side_effect=lambda *args, **kwargs: calls.append("check"),
     )
 
-    result = run_due_work(now=timezone.now())
+    result = run_worker_due_work(now=timezone.now())
 
     assert calls == ["verify-mail", "expire", "mail", "claim", "check"]
     assert result == {
@@ -135,6 +137,48 @@ def test_worker_runs_mail_verification_expiry_notifications_then_one_claim(mocke
     check.assert_called_once_with(
         claim.task_id, now=mocker.ANY, claim_token=claim.token
     )
+
+
+@pytest.mark.django_db
+def test_unexpected_mail_error_does_not_prevent_later_movie_check(
+    opening_notification, task_factory, mocker
+):
+    """Letting an unexpected send error escape would skip the claimed movie check."""
+    now = timezone.now()
+    config = AgentMailConfig.get_solo()
+    AgentMailConfig.objects.filter(pk=config.pk).update(
+        is_verified=True,
+        verified_at=now,
+        verification_status=AgentMailConfig.VerificationStatus.VERIFIED,
+        verification_completed_at=now,
+    )
+    due_task = task_factory(
+        query_key="maoyan:10:unexpected-mail",
+        movie_id="2222222",
+        movie_name="第二部电影",
+        cinema_name="另一家影院",
+        normalized_cinema_name="另一家影院",
+        next_check_at=now,
+    )
+    mocker.patch("core.worker.process_mail_verification", return_value=False)
+    mocker.patch(
+        "core.services.notifications.send_agent_mail",
+        side_effect=RuntimeError("private provider detail"),
+    )
+    check = mocker.patch("core.worker.perform_check")
+
+    result = run_worker_due_work(now=now)
+
+    opening_notification.refresh_from_db()
+    assert opening_notification.status == Notification.Status.PENDING
+    assert opening_notification.last_error == "agent-mail-preflight-failed"
+    assert result == {
+        "mail": False,
+        "expired": False,
+        "notifications": 1,
+        "checked": True,
+    }
+    check.assert_called_once_with(due_task.pk, now=now, claim_token=mocker.ANY)
 
 
 def test_worker_loop_skips_wait_while_work_remains(settings, mocker):

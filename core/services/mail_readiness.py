@@ -5,10 +5,8 @@ from django.conf import settings
 from django.utils import timezone
 
 from core.models import AgentMailConfig, RuntimeState
-from core.services.agent_mail import AGENT_MAIL_SENDER
+from core.services.agent_mail import AGENT_MAIL_RECIPIENT, AGENT_MAIL_SENDER
 from core.services.runtime_health import worker_heartbeat_is_fresh
-
-AGENT_MAIL_RECIPIENT = "850634546@qq.com"
 
 
 @dataclass(frozen=True)

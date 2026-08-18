@@ -18,7 +18,6 @@ from core.services.tasks import perform_check
 
 def run_due_work(now=None) -> dict[str, int | bool]:
     now = now or timezone.now()
-    mail = process_mail_verification(now=now)
     expired = expire_due_task(now=now)
     notifications = dispatch_due_notifications(now=now)
     claim = claim_due_task(now=now)
@@ -26,11 +25,16 @@ def run_due_work(now=None) -> dict[str, int | bool]:
     if claim is not None:
         perform_check(claim.task_id, now=now, claim_token=claim.token)
     return {
-        "mail": mail,
         "expired": expired,
         "notifications": notifications,
         "checked": checked,
     }
+
+
+def run_worker_due_work(now=None) -> dict[str, int | bool]:
+    now = now or timezone.now()
+    mail = process_mail_verification(now=now)
+    return {"mail": mail, **run_due_work(now=now)}
 
 
 class WorkerLoop:
@@ -42,7 +46,7 @@ class WorkerLoop:
         close_old_connections()
         try:
             record_worker_heartbeat(now=now)
-            return run_due_work(now=now)
+            return run_worker_due_work(now=now)
         finally:
             close_old_connections()
 

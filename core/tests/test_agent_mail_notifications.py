@@ -10,6 +10,11 @@ from core.services.agent_mail import (
     AgentMailConfigError,
     AgentMailPermanentError,
     AgentMailTemporaryError,
+    AgentMailUncertainError,
+)
+from core.services.mail_verification import (
+    _claim_pending_verification,
+    request_mail_verification,
 )
 from core.services.notifications import deliver_notification, dispatch_due_notifications
 
@@ -61,7 +66,7 @@ def test_temporary_agent_mail_error_schedules_retry(
 ):
     mocker.patch(
         "core.services.notifications.send_agent_mail",
-        side_effect=AgentMailTemporaryError("agent-mail-network-error"),
+        side_effect=AgentMailTemporaryError("private network endpoint"),
         create=True,
     )
     now = timezone.now()
@@ -73,6 +78,12 @@ def test_temporary_agent_mail_error_schedules_retry(
     assert opening_notification.retry_count == 1
     assert opening_notification.next_attempt_at == now + timedelta(minutes=1)
     assert opening_notification.last_error == "agent-mail-network-error"
+    verified_mail.refresh_from_db()
+    assert verified_mail.is_verified is False
+    assert verified_mail.verified_at is None
+    assert verified_mail.verification_status == AgentMailConfig.VerificationStatus.FAILED
+    assert verified_mail.verification_completed_at == now
+    assert verified_mail.last_error == "agent-mail-network-error"
 
 
 @pytest.mark.parametrize(
@@ -122,7 +133,7 @@ def test_permanent_agent_mail_rejection_is_not_retried(
 ):
     mocker.patch(
         "core.services.notifications.send_agent_mail",
-        side_effect=AgentMailPermanentError("agent-mail-recipient-rejected"),
+        side_effect=AgentMailPermanentError("private recipient detail"),
         create=True,
     )
 
@@ -134,6 +145,105 @@ def test_permanent_agent_mail_rejection_is_not_retried(
     assert opening_notification.next_attempt_at is None
     assert opening_notification.last_error == "agent-mail-recipient-rejected"
     assert opening_notification.task.status == MonitorTask.Status.DETECTED
+    verified_mail.refresh_from_db()
+    assert verified_mail.is_verified is True
+    assert verified_mail.verification_status == AgentMailConfig.VerificationStatus.VERIFIED
+
+
+@pytest.mark.parametrize(
+    ("error", "safe_code", "notification_status", "next_attempt_delta"),
+    [
+        (
+            AgentMailAuthError("private OAuth token"),
+            "agent-mail-auth-required",
+            Notification.Status.PENDING,
+            None,
+        ),
+        (
+            AgentMailTemporaryError("private network endpoint"),
+            "agent-mail-network-error",
+            Notification.Status.PENDING,
+            timedelta(minutes=1),
+        ),
+        (
+            AgentMailUncertainError("private provider response"),
+            "agent-mail-result-unknown",
+            Notification.Status.NEEDS_REVIEW,
+            None,
+        ),
+        (
+            RuntimeError("private unexpected detail"),
+            "agent-mail-preflight-failed",
+            Notification.Status.PENDING,
+            None,
+        ),
+    ],
+)
+@pytest.mark.django_db
+def test_proof_invalidating_error_preserves_request_created_during_send(
+    opening_notification,
+    verified_mail,
+    mocker,
+    error,
+    safe_code,
+    notification_status,
+    next_attempt_delta,
+):
+    """Revoking proof must not erase a newer request, lease, or safe error boundary."""
+    now = timezone.now()
+    requested_at = now + timedelta(seconds=1)
+
+    def request_then_fail(*args):
+        request_mail_verification(now=requested_at)
+        claim = _claim_pending_verification(now=requested_at)
+        assert claim is not None
+        raise error
+
+    mocker.patch(
+        "core.services.notifications.send_agent_mail",
+        side_effect=request_then_fail,
+        create=True,
+    )
+
+    deliver_notification(opening_notification.pk, now=now)
+
+    opening_notification.refresh_from_db()
+    verified_mail.refresh_from_db()
+    assert opening_notification.status == notification_status
+    assert opening_notification.last_error == safe_code
+    assert opening_notification.next_attempt_at == (
+        now + next_attempt_delta if next_attempt_delta is not None else None
+    )
+    assert "private" not in opening_notification.last_error
+    assert verified_mail.is_verified is False
+    assert verified_mail.verified_at is None
+    assert verified_mail.verification_status == AgentMailConfig.VerificationStatus.PENDING
+    assert verified_mail.verification_requested_at == requested_at
+    assert verified_mail.verification_claim_token is not None
+    assert verified_mail.verification_claim_expires_at is not None
+
+
+@pytest.mark.django_db
+def test_notification_recipient_drift_is_rejected_before_cli(
+    opening_notification, verified_mail, mocker
+):
+    """Trusting mutable DB recipient data would send mail outside the fixed boundary."""
+    AgentMailConfig.objects.filter(pk=verified_mail.pk).update(
+        recipient_email="attacker@example.com"
+    )
+    verify = mocker.patch("core.services.agent_mail.verify_agent_mail")
+    run = mocker.patch(
+        "core.services.agent_mail._run",
+        return_value={"ok": True, "queued": True},
+    )
+
+    deliver_notification(opening_notification.pk, now=timezone.now())
+
+    opening_notification.refresh_from_db()
+    assert opening_notification.status == Notification.Status.PENDING
+    assert opening_notification.last_error == "agent-mail-config-error"
+    verify.assert_not_called()
+    run.assert_not_called()
 
 
 @pytest.mark.django_db

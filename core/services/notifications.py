@@ -157,29 +157,47 @@ def mark_uncertain_sending_notifications() -> int:
         )
 
 
+def _revoke_mail_attestation(error, now):
+    with transaction.atomic():
+        config = AgentMailConfig.objects.select_for_update().filter(pk=1).first()
+        if config is None:
+            return
+        if config.verification_status == AgentMailConfig.VerificationStatus.PENDING:
+            AgentMailConfig.objects.filter(pk=config.pk).update(
+                is_verified=False,
+                verified_at=None,
+            )
+            return
+        AgentMailConfig.objects.filter(pk=config.pk).update(
+            is_verified=False,
+            verified_at=None,
+            verification_status=AgentMailConfig.VerificationStatus.FAILED,
+            verification_completed_at=now,
+            verification_claim_token=None,
+            verification_claim_expires_at=None,
+            last_error=error,
+            updated_at=now,
+        )
+
+
 def _park_for_mail_repair(notification_id, error, *, unverify_mail, now=None):
     now = now or timezone.now()
     with transaction.atomic():
         current = Notification.objects.select_for_update().get(pk=notification_id)
-        if current.status != Notification.Status.SENDING:
-            return
-        current.status = Notification.Status.PENDING
-        current.next_attempt_at = None
-        current.last_error = error
-        current.save(
-            update_fields=["status", "next_attempt_at", "last_error", "updated_at"]
-        )
-        if unverify_mail:
-            AgentMailConfig.objects.filter(pk=1).update(
-                is_verified=False,
-                verified_at=None,
-                verification_status=AgentMailConfig.VerificationStatus.FAILED,
-                verification_completed_at=now,
-                verification_claim_token=None,
-                verification_claim_expires_at=None,
-                last_error=error,
-                updated_at=now,
+        if current.status == Notification.Status.SENDING:
+            current.status = Notification.Status.PENDING
+            current.next_attempt_at = None
+            current.last_error = error
+            current.save(
+                update_fields=[
+                    "status",
+                    "next_attempt_at",
+                    "last_error",
+                    "updated_at",
+                ]
             )
+    if unverify_mail:
+        _revoke_mail_attestation(error, now)
 
 
 def _reschedule_notification(notification_id, error, now):
@@ -272,7 +290,9 @@ def deliver_notification(notification_id, now=None):
             config.recipient_email, outgoing.subject, outgoing.body
         )
     except AgentMailUncertainError as exc:
-        _mark_notification_needs_review(notification_id, str(exc))
+        error = safe_agent_mail_error_code(exc)
+        _mark_notification_needs_review(notification_id, error)
+        _revoke_mail_attestation(error, now)
         return
     except (AgentMailAuthError, AgentMailConfigError) as exc:
         _park_for_mail_repair(
@@ -283,10 +303,24 @@ def deliver_notification(notification_id, now=None):
         )
         return
     except AgentMailTemporaryError as exc:
-        _reschedule_notification(notification_id, str(exc), now)
+        error = safe_agent_mail_error_code(exc)
+        _reschedule_notification(notification_id, error, now)
+        _revoke_mail_attestation(error, now)
         return
     except AgentMailPermanentError as exc:
-        _fail_notification_permanently(notification_id, str(exc))
+        _fail_notification_permanently(
+            notification_id,
+            safe_agent_mail_error_code(exc),
+        )
+        return
+    except Exception as exc:
+        error = safe_agent_mail_error_code(exc)
+        _park_for_mail_repair(
+            notification_id,
+            error,
+            unverify_mail=True,
+            now=now,
+        )
         return
 
     with transaction.atomic():

@@ -24,10 +24,7 @@ def test_due_work_uses_sqlite_due_state_in_safe_order(active_task, pending_notif
     active_task.next_check_at = now
     active_task.save(update_fields=["next_check_at"])
     calls = []
-    mail = mocker.patch(
-        "core.worker.process_mail_verification",
-        side_effect=lambda now=None: calls.append(("mail", now)) or False,
-    )
+    mail = mocker.patch("core.worker.process_mail_verification")
     expire = mocker.patch(
         "core.worker.expire_due_task",
         side_effect=lambda now=None: calls.append(("expire", now)) or False,
@@ -46,18 +43,16 @@ def test_due_work_uses_sqlite_due_state_in_safe_order(active_task, pending_notif
     outcome = run_due_work(now=now)
 
     assert outcome == {
-        "mail": False,
         "expired": False,
         "notifications": 1,
         "checked": True,
     }
     assert calls == [
-        ("mail", now),
         ("expire", now),
         ("notifications", now),
         ("check", active_task.pk, now),
     ]
-    mail.assert_called_once_with(now=now)
+    mail.assert_not_called()
     expire.assert_called_once_with(now=now)
     deliver.assert_called_once_with(now=now)
     check.assert_called_once_with(active_task.pk, now=now, claim_token=mocker.ANY)
@@ -69,7 +64,6 @@ def test_due_work_does_not_check_future_or_paused_tasks(task_factory, mocker):
     now = timezone.now()
     future_task = task_factory(next_check_at=now + timezone.timedelta(minutes=1))
     check = mocker.patch("core.worker.perform_check")
-    mocker.patch("core.worker.process_mail_verification", return_value=False)
     mocker.patch("core.worker.expire_due_task", return_value=False)
     mocker.patch("core.worker.dispatch_due_notifications", return_value=0)
 
@@ -97,7 +91,6 @@ def test_due_work_checks_the_most_overdue_task_first(active_task, task_factory, 
         normalized_cinema_name="另一家影院",
     )
     check = mocker.patch("core.worker.perform_check")
-    mocker.patch("core.worker.process_mail_verification", return_value=False)
     mocker.patch("core.worker.expire_due_task", return_value=False)
     mocker.patch("core.worker.dispatch_due_notifications", return_value=0)
 
@@ -126,12 +119,10 @@ def test_due_work_sends_one_backlogged_notification_then_checks_due_task(
         "core.services.notifications.send_agent_mail", return_value="queued"
     )
     check = mocker.patch("core.worker.perform_check")
-    mocker.patch("core.worker.process_mail_verification", return_value=False)
 
     outcome = run_due_work(now=now)
 
     assert outcome == {
-        "mail": False,
         "expired": False,
         "notifications": 1,
         "checked": True,

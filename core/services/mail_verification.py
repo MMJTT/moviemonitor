@@ -145,9 +145,26 @@ def process_mail_verification(
         return True
 
     config = AgentMailConfig.get_solo()
+    if config.verification_status == AgentMailConfig.VerificationStatus.PENDING:
+        if config.verification_requested_at is None:
+            AgentMailConfig.objects.filter(
+                pk=config.pk,
+                updated_at=config.updated_at,
+                verification_status=AgentMailConfig.VerificationStatus.PENDING,
+                verification_requested_at__isnull=True,
+            ).update(
+                **_verification_values(
+                    now=now,
+                    verified=False,
+                    error_code="agent-mail-config-error",
+                )
+            )
+        return False
     if not force_identity and config.verification_completed_at is not None:
         age = now - config.verification_completed_at
-        if age < timedelta(seconds=settings.AGENT_MAIL_REVERIFY_SECONDS):
+        if timedelta(0) <= age < timedelta(
+            seconds=settings.AGENT_MAIL_REVERIFY_SECONDS
+        ):
             return False
 
     verified, error_code = _run_verification(verify_agent_mail)

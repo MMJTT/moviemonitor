@@ -1,5 +1,6 @@
 import json
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 from django.test import override_settings
@@ -12,6 +13,9 @@ from core.services.agent_mail import (
     AgentMailUncertainError,
     send_agent_mail,
     verify_agent_mail,
+)
+from core.services.agent_mail import (
+    test_agent_mail_config as run_agent_mail_config_test,
 )
 
 SENDER = "mijiatong@agent.qq.com"
@@ -103,6 +107,32 @@ def test_send_agent_mail_uses_confirmed_argument_list_without_a_shell(mocker):
         "--confirmed",
     ]
     assert run.call_args_list[1].kwargs["shell"] is False
+
+
+def test_send_agent_mail_rejects_recipient_drift_before_identity_cli(mocker):
+    """Checking the recipient after identity I/O could still reach an unsafe send path."""
+    verify = mocker.patch("core.services.agent_mail.verify_agent_mail")
+    run = mocker.patch("core.services.agent_mail._run")
+
+    with pytest.raises(AgentMailConfigError, match="agent-mail-recipient-mismatch"):
+        send_agent_mail("attacker@example.com", "测试", "正文")
+
+    verify.assert_not_called()
+    run.assert_not_called()
+
+
+def test_agent_mail_config_rejects_recipient_drift_before_transport(mocker):
+    """A modified singleton recipient must not be passed into the transport."""
+    send = mocker.patch("core.services.agent_mail.send_agent_mail")
+    config = SimpleNamespace(
+        sender_email=SENDER,
+        recipient_email="attacker@example.com",
+    )
+
+    with pytest.raises(AgentMailConfigError, match="agent-mail-recipient-mismatch"):
+        run_agent_mail_config_test(config)
+
+    send.assert_not_called()
 
 
 @pytest.mark.parametrize(

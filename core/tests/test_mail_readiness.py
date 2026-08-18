@@ -63,11 +63,18 @@ def test_mail_readiness_rejects_stale_attestation(settings):
     assert mail_readiness(now=now) == MailReadiness(False, "mail-attestation-stale")
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sender_email", "wrong@example.com"),
+        ("recipient_email", "attacker@example.com"),
+    ],
+)
 @pytest.mark.django_db
-def test_mail_readiness_rejects_fixed_address_mismatch():
+def test_mail_readiness_rejects_fixed_address_mismatch(field, value):
     now = timezone.now()
     config = _verified_config(now)
-    config.sender_email = "wrong@example.com"
+    setattr(config, field, value)
     config.save()
     RuntimeState.objects.create(worker_heartbeat_at=now)
 

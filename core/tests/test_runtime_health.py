@@ -280,7 +280,7 @@ def test_record_worker_heartbeat_updates_singleton_state():
 
 def test_worker_heartbeat_database_failure_escapes_before_due_work(mocker):
     loop = WorkerLoop()
-    due_work = mocker.patch("core.worker.run_due_work")
+    due_work = mocker.patch("core.worker.run_worker_due_work")
     mocker.patch(
         "core.worker.record_worker_heartbeat",
         side_effect=OperationalError("database unavailable"),
@@ -298,8 +298,13 @@ def test_worker_forever_records_start_and_loop_heartbeat(settings, mocker):
     loop = WorkerLoop()
     mocker.patch("core.worker.mark_uncertain_sending_notifications", return_value=0)
     mocker.patch(
-        "core.worker.run_due_work",
-        return_value={"expired": False, "notifications": 0, "checked": False},
+        "core.worker.run_worker_due_work",
+        return_value={
+            "mail": False,
+            "expired": False,
+            "notifications": 0,
+            "checked": False,
+        },
     )
     mocker.patch("core.worker.wait_for_worker", side_effect=lambda *args: loop.stop())
     mocker.patch("core.worker.notify_worker", return_value=False)

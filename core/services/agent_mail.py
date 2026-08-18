@@ -6,6 +6,7 @@ import subprocess
 from django.conf import settings
 
 AGENT_MAIL_SENDER = "mijiatong@agent.qq.com"
+AGENT_MAIL_RECIPIENT = "850634546@qq.com"
 
 
 class AgentMailError(RuntimeError):
@@ -118,6 +119,8 @@ def verify_agent_mail():
 
 
 def send_agent_mail(recipient, subject, body):
+    if recipient != AGENT_MAIL_RECIPIENT:
+        raise AgentMailConfigError("agent-mail-recipient-mismatch")
     verify_agent_mail()
     payload = _run(
         [
@@ -146,6 +149,8 @@ def send_agent_mail(recipient, subject, body):
 def test_agent_mail_config(config):
     if config.sender_email != AGENT_MAIL_SENDER:
         raise AgentMailConfigError("agent-mail-sender-mismatch")
+    if config.recipient_email != AGENT_MAIL_RECIPIENT:
+        raise AgentMailConfigError("agent-mail-recipient-mismatch")
     return send_agent_mail(
         config.recipient_email,
         "TicketWatch Agent Mail 测试邮件",

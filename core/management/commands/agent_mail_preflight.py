@@ -32,11 +32,11 @@ class Command(BaseCommand):
         AgentMailConfig.objects.filter(pk=config.pk).update(
             is_verified=False,
             verified_at=None,
-            verification_status=AgentMailConfig.VerificationStatus.PENDING,
-            verification_completed_at=None,
+            verification_status=AgentMailConfig.VerificationStatus.FAILED,
+            verification_completed_at=now,
             verification_claim_token=None,
             verification_claim_expires_at=None,
-            last_error="",
+            last_error="agent-mail-preflight-failed",
             updated_at=now,
         )
         config.refresh_from_db()
@@ -44,33 +44,48 @@ class Command(BaseCommand):
     @staticmethod
     def _mark_verified(config):
         now = timezone.now()
-        AgentMailConfig.objects.filter(pk=config.pk).update(
-            is_verified=True,
-            verified_at=now,
-            verification_status=AgentMailConfig.VerificationStatus.VERIFIED,
-            verification_completed_at=now,
-            verification_claim_token=None,
-            verification_claim_expires_at=None,
-            last_error="",
-            updated_at=now,
+        (
+            AgentMailConfig.objects.filter(
+                pk=config.pk,
+                updated_at=config.updated_at,
+            )
+            .exclude(verification_status=AgentMailConfig.VerificationStatus.PENDING)
+            .update(
+                is_verified=True,
+                verified_at=now,
+                verification_status=AgentMailConfig.VerificationStatus.VERIFIED,
+                verification_completed_at=now,
+                verification_claim_token=None,
+                verification_claim_expires_at=None,
+                last_error="",
+                updated_at=now,
+            )
         )
 
     @staticmethod
     def _mark_failed(config, error):
         now = timezone.now()
-        AgentMailConfig.objects.filter(pk=config.pk).update(
-            is_verified=False,
-            verified_at=None,
-            verification_status=AgentMailConfig.VerificationStatus.FAILED,
-            verification_completed_at=now,
-            verification_claim_token=None,
-            verification_claim_expires_at=None,
-            last_error=safe_agent_mail_error_code(error),
-            updated_at=now,
+        (
+            AgentMailConfig.objects.filter(
+                pk=config.pk,
+                updated_at=config.updated_at,
+            )
+            .exclude(verification_status=AgentMailConfig.VerificationStatus.PENDING)
+            .update(
+                is_verified=False,
+                verified_at=None,
+                verification_status=AgentMailConfig.VerificationStatus.FAILED,
+                verification_completed_at=now,
+                verification_claim_token=None,
+                verification_claim_expires_at=None,
+                last_error=safe_agent_mail_error_code(error),
+                updated_at=now,
+            )
         )
 
     def handle(self, *args, **options):
         config = AgentMailConfig.get_solo()
+        self._reset_verification(config)
         if not options["send_test"]:
             try:
                 verify_agent_mail()
@@ -81,7 +96,6 @@ class Command(BaseCommand):
             self.stdout.write(SUCCESS_MESSAGE)
             return
 
-        self._reset_verification(config)
         try:
             queued = test_agent_mail_config(config)
             if queued != "queued":
