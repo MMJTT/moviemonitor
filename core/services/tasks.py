@@ -1,5 +1,3 @@
-import threading
-from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import date, timedelta
 
@@ -59,18 +57,6 @@ class TaskCreationError(ValueError):
 
 class TaskTransitionError(ValueError):
     """Raised when the current durable task state rejects a lifecycle action."""
-
-
-_task_transition_lock = threading.RLock()
-
-
-@contextmanager
-def task_transition():
-    with _task_transition_lock:
-        yield
-
-
-opening_notification_transition = task_transition
 
 
 @dataclass(frozen=True)
@@ -190,14 +176,14 @@ def cancel_task(task_id, now=None):
         MonitorTask.Status.ERROR,
     }
     now = now or timezone.now()
-    with opening_notification_transition(), transaction.atomic():
-        task = MonitorTask.objects.filter(pk=task_id).first()
+    with transaction.atomic():
+        task = MonitorTask.objects.select_for_update().filter(pk=task_id).first()
         if task is None:
             raise MonitorTask.DoesNotExist
         if task.status not in unfinished_statuses:
             raise TaskTransitionError("task state does not allow cancellation")
         opening = (
-            Notification.objects.filter(
+            Notification.objects.select_for_update().filter(
                 task_id=task_id,
                 notification_type=Notification.Type.OPENING,
             )
@@ -311,7 +297,7 @@ def perform_check(task_id, now=None, claim_token=None):
         failure = exc
 
     finished_at = timezone.now()
-    with task_transition(), transaction.atomic():
+    with transaction.atomic():
         current = MonitorTask.objects.select_for_update().get(pk=task_id)
         if not claim_matches(current, claim_token):
             raise StaleTaskClaim("task lease no longer belongs to this worker")

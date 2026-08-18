@@ -28,7 +28,6 @@ from core.services.tasks import (
     create_task,
     payload_from_signed_preview,
     sign_preview,
-    task_transition,
 )
 
 
@@ -91,7 +90,7 @@ def settings_edit(request):
     setting = AppSetting.get_solo()
     form = AppSettingForm(request.POST or None, instance=setting)
     if request.method == "POST" and form.is_valid():
-        with task_transition(), transaction.atomic():
+        with transaction.atomic():
             setting = form.save()
             now = timezone.now()
             monitoring_tasks = list(
@@ -207,7 +206,7 @@ def _lifecycle_redirect(task_id):
 
 @require_POST
 def task_pause(request, task_id):
-    with task_transition(), transaction.atomic():
+    with transaction.atomic():
         task = get_object_or_404(
             MonitorTask.objects.select_for_update(),
             pk=task_id,
@@ -232,7 +231,7 @@ def task_pause(request, task_id):
 
 @require_POST
 def task_resume(request, task_id):
-    with task_transition(), transaction.atomic():
+    with transaction.atomic():
         task = get_object_or_404(
             MonitorTask.objects.select_for_update(),
             pk=task_id,
@@ -275,7 +274,7 @@ def task_cancel(request, task_id):
 
 @require_POST
 def task_run_now(request, task_id):
-    with task_transition(), transaction.atomic():
+    with transaction.atomic():
         task = get_object_or_404(
             MonitorTask.objects.select_for_update(),
             pk=task_id,

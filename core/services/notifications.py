@@ -16,7 +16,7 @@ from core.services.agent_mail import (
     safe_agent_mail_error_code,
     send_agent_mail,
 )
-from core.services.tasks import TASK_NO_LONGER_DETECTED, opening_notification_transition
+from core.services.tasks import TASK_NO_LONGER_DETECTED
 
 RETRY_MINUTES = (1, 5, 15, 30, 60)
 EXPIRED_BEFORE_DELIVERY = "expired-before-delivery"
@@ -30,43 +30,42 @@ EXPIRABLE_TASK_STATUSES = (
 
 
 def _expire_locked_task(task, now):
-    with opening_notification_transition():
-        task.status = MonitorTask.Status.EXPIRED
-        task.expired_at = now
-        task.next_check_at = None
-        task.claim_token = None
-        task.claim_expires_at = None
-        task.save(
-            update_fields=[
-                "status",
-                "expired_at",
-                "next_check_at",
-                "claim_token",
-                "claim_expires_at",
-                "updated_at",
-            ]
-        )
-        Notification.objects.filter(
-            task=task,
-            notification_type=Notification.Type.OPENING,
-            status=Notification.Status.PENDING,
-        ).update(
-            status=Notification.Status.PERMANENT_FAILED,
-            next_attempt_at=None,
-            last_error=EXPIRED_BEFORE_DELIVERY,
-            updated_at=now,
-        )
-        Notification.objects.get_or_create(
-            task=task,
-            notification_type=Notification.Type.EXPIRY,
-            defaults={"status": Notification.Status.PENDING},
-        )
+    task.status = MonitorTask.Status.EXPIRED
+    task.expired_at = now
+    task.next_check_at = None
+    task.claim_token = None
+    task.claim_expires_at = None
+    task.save(
+        update_fields=[
+            "status",
+            "expired_at",
+            "next_check_at",
+            "claim_token",
+            "claim_expires_at",
+            "updated_at",
+        ]
+    )
+    Notification.objects.filter(
+        task=task,
+        notification_type=Notification.Type.OPENING,
+        status=Notification.Status.PENDING,
+    ).update(
+        status=Notification.Status.PERMANENT_FAILED,
+        next_attempt_at=None,
+        last_error=EXPIRED_BEFORE_DELIVERY,
+        updated_at=now,
+    )
+    Notification.objects.get_or_create(
+        task=task,
+        notification_type=Notification.Type.EXPIRY,
+        defaults={"status": Notification.Status.PENDING},
+    )
 
 
 def expire_due_task(now=None):
     now = now or timezone.now()
     local_date = timezone.localdate(now)
-    with opening_notification_transition(), transaction.atomic():
+    with transaction.atomic():
         tasks = list(
             MonitorTask.objects.select_for_update()
             .filter(status__in=EXPIRABLE_TASK_STATUSES, show_date__lt=local_date)
@@ -248,16 +247,29 @@ def _fail_notification_permanently(notification_id, error):
 
 def deliver_notification(notification_id, now=None):
     now = now or timezone.now()
-    with opening_notification_transition(), transaction.atomic():
+    task_id = (
+        Notification.objects.filter(pk=notification_id)
+        .values_list("task_id", flat=True)
+        .first()
+    )
+    if task_id is None:
+        return
+    with transaction.atomic():
+        task = MonitorTask.objects.select_for_update().filter(pk=task_id).first()
+        if task is None:
+            return
         notification = (
             Notification.objects.select_for_update()
-            .select_related("task")
-            .filter(pk=notification_id, status=Notification.Status.PENDING)
+            .filter(
+                pk=notification_id,
+                task_id=task_id,
+                status=Notification.Status.PENDING,
+            )
             .first()
         )
         if notification is None:
             return
-        task = MonitorTask.objects.select_for_update().get(pk=notification.task_id)
+        notification.task = task
         if notification.notification_type == Notification.Type.OPENING:
             if task.status != MonitorTask.Status.DETECTED:
                 notification.status = Notification.Status.PERMANENT_FAILED
@@ -331,7 +343,13 @@ def deliver_notification(notification_id, now=None):
         return
 
     with transaction.atomic():
-        current = Notification.objects.select_for_update().get(pk=notification_id)
+        current_task = MonitorTask.objects.select_for_update().filter(pk=task_id).first()
+        if current_task is None:
+            return
+        current = Notification.objects.select_for_update().get(
+            pk=notification_id,
+            task_id=task_id,
+        )
         if current.status != Notification.Status.SENDING:
             return
         current.status = Notification.Status.SENT
@@ -350,7 +368,6 @@ def deliver_notification(notification_id, now=None):
             ]
         )
         if current.notification_type == Notification.Type.OPENING:
-            current_task = MonitorTask.objects.select_for_update().get(pk=current.task_id)
             if current_task.status == MonitorTask.Status.DETECTED:
                 current_task.status = MonitorTask.Status.COMPLETED
                 current_task.notified_at = now
