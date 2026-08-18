@@ -1,10 +1,26 @@
+x-app-environment: &app-environment
+  TICKETWATCH_ENV: ${TICKETWATCH_ENV:-production}
+  DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?DJANGO_SECRET_KEY is required}
+  DJANGO_DEBUG: ${DJANGO_DEBUG:-false}
+  DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-127.0.0.1,localhost}
+  POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+  POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+  POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+  POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+  WORKER_SCAN_SECONDS: ${WORKER_SCAN_SECONDS:-10}
+  WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS:-300}
+  AGENT_MAIL_REVERIFY_SECONDS: ${AGENT_MAIL_REVERIFY_SECONDS:-21600}
+  AGENT_MAIL_ATTESTATION_TTL_SECONDS: ${AGENT_MAIL_ATTESTATION_TTL_SECONDS:-86400}
+  AGENT_MAIL_CLAIM_SECONDS: ${AGENT_MAIL_CLAIM_SECONDS:-120}
+
 services:
   web:
     build:
       context: .
       target: web
-    env_file:
-      - ${TICKETWATCH_ENV_FILE:-../.env}
+    environment: *app-environment
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -34,8 +50,10 @@ services:
     build:
       context: .
       target: worker
-    env_file:
-      - ${TICKETWATCH_ENV_FILE:-../.env}
+    environment:
+      <<: *app-environment
+      AGENTLY_WORKSPACE: ${AGENTLY_WORKSPACE:-ticketwatch-server}
+      AGENTLY_KEYRING_PASSWORD: ${AGENTLY_KEYRING_PASSWORD:?AGENTLY_KEYRING_PASSWORD is required}
     volumes:
       - type: bind
         source: ${AGENTLY_DATA_DIR:-../data/agently}

@@ -10,6 +10,23 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 AGENT_MAIL_HOST_ROOT = "/tmp/ticketwatch-contract-agently"
 AGENT_MAIL_CONTAINER_ROOT = "/home/ticketwatch"
+WEB_REQUIRED_ENVIRONMENT = {
+    "TICKETWATCH_ENV",
+    "DJANGO_SECRET_KEY",
+    "DJANGO_DEBUG",
+    "DJANGO_ALLOWED_HOSTS",
+    "POSTGRES_HOST",
+    "POSTGRES_PORT",
+    "POSTGRES_DB",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "REDIS_URL",
+    "WORKER_SCAN_SECONDS",
+    "WORKER_LEASE_SECONDS",
+    "AGENT_MAIL_REVERIFY_SECONDS",
+    "AGENT_MAIL_ATTESTATION_TTL_SECONDS",
+    "AGENT_MAIL_CLAIM_SECONDS",
+}
 
 
 def _is_equal_or_descendant(candidate, root):
@@ -28,6 +45,10 @@ def _assert_web_has_no_agent_mail_mounts(web_volumes):
         assert not _is_equal_or_descendant(
             volume.get("target"), AGENT_MAIL_CONTAINER_ROOT
         )
+
+
+def _assert_web_has_no_agent_mail_environment(environment):
+    assert [name for name in environment if name.startswith("AGENTLY_")] == []
 
 
 @pytest.fixture(scope="module")
@@ -71,6 +92,32 @@ def test_web_has_no_agent_mail_home_or_credentials_mount(compose_config):
     web_volumes = compose_config["services"]["web"].get("volumes", [])
 
     _assert_web_has_no_agent_mail_mounts(web_volumes)
+
+
+def test_web_receives_only_the_explicit_non_agent_mail_environment(compose_config):
+    web_environment = compose_config["services"]["web"]["environment"]
+
+    _assert_web_has_no_agent_mail_environment(web_environment)
+    assert set(web_environment) == WEB_REQUIRED_ENVIRONMENT
+
+
+def test_web_agent_mail_environment_mutation_is_rejected(compose_config):
+    mutated_environment = copy.deepcopy(
+        compose_config["services"]["web"]["environment"]
+    )
+    mutated_environment["AGENTLY_KEYRING_PASSWORD"] = "contract-secret"
+
+    with pytest.raises(AssertionError):
+        _assert_web_has_no_agent_mail_environment(mutated_environment)
+
+
+def test_worker_retains_agent_mail_runtime_environment(compose_config):
+    worker_environment = compose_config["services"]["worker"]["environment"]
+
+    assert set(worker_environment) == WEB_REQUIRED_ENVIRONMENT | {
+        "AGENTLY_KEYRING_PASSWORD",
+        "AGENTLY_WORKSPACE",
+    }
 
 
 @pytest.mark.parametrize(
