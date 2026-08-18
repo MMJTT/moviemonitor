@@ -6,6 +6,12 @@ from django.core.exceptions import ImproperlyConfigured
 from ticketwatch.config import build_database_config, env_bool, validate_production_env
 
 
+def test_agent_mail_attestation_defaults(settings):
+    assert settings.AGENT_MAIL_REVERIFY_SECONDS == 21600
+    assert settings.AGENT_MAIL_ATTESTATION_TTL_SECONDS == 86400
+    assert settings.AGENT_MAIL_CLAIM_SECONDS == 120
+
+
 def test_production_requires_secret_and_postgres():
     with pytest.raises(ImproperlyConfigured, match="DJANGO_SECRET_KEY"):
         validate_production_env({"TICKETWATCH_ENV": "production"})

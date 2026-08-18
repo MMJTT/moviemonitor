@@ -36,6 +36,13 @@ ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "127.0.0.1,localhost,test
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 WORKER_SCAN_SECONDS = int(os.environ.get("WORKER_SCAN_SECONDS", "10"))
 WORKER_LEASE_SECONDS = int(os.environ.get("WORKER_LEASE_SECONDS", "300"))
+AGENT_MAIL_REVERIFY_SECONDS = int(
+    os.environ.get("AGENT_MAIL_REVERIFY_SECONDS", "21600")
+)
+AGENT_MAIL_ATTESTATION_TTL_SECONDS = int(
+    os.environ.get("AGENT_MAIL_ATTESTATION_TTL_SECONDS", "86400")
+)
+AGENT_MAIL_CLAIM_SECONDS = int(os.environ.get("AGENT_MAIL_CLAIM_SECONDS", "120"))
 AGENTLY_WORKSPACE = os.environ.get("AGENTLY_WORKSPACE", "codex")
 
 

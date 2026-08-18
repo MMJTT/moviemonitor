@@ -52,6 +52,17 @@ def test_agent_mail_config_singleton_returns_the_same_record():
 
 
 @pytest.mark.django_db
+def test_agent_mail_config_verification_defaults_to_failed_without_a_claim():
+    config = AgentMailConfig.get_solo()
+
+    assert config.verification_status == AgentMailConfig.VerificationStatus.FAILED
+    assert config.verification_requested_at is None
+    assert config.verification_completed_at is None
+    assert config.verification_claim_token is None
+    assert config.verification_claim_expires_at is None
+
+
+@pytest.mark.django_db
 def test_agent_mail_recipient_is_fixed_for_server_delivery():
     config = AgentMailConfig.get_solo()
 

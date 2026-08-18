@@ -1,5 +1,5 @@
 import shutil
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import redis
 from django.conf import settings
@@ -36,13 +36,17 @@ def record_worker_heartbeat(started=False, now=None) -> None:
     RuntimeState.objects.update_or_create(pk=1, defaults=values)
 
 
-def _worker_status(state, now):
+def worker_heartbeat_is_fresh(state: RuntimeState | None, now: datetime) -> bool:
     heartbeat = state.worker_heartbeat_at if state else None
     threshold = timedelta(seconds=max(settings.WORKER_SCAN_SECONDS * 3, 30))
     age = now - heartbeat if heartbeat is not None else None
-    is_recent = age is not None and timedelta(0) <= age <= threshold
+    return age is not None and timedelta(0) <= age <= threshold
+
+
+def _worker_status(state, now):
+    heartbeat = state.worker_heartbeat_at if state else None
     return {
-        "status": "ok" if is_recent else "stale",
+        "status": "ok" if worker_heartbeat_is_fresh(state, now) else "stale",
         "started_at": _iso_datetime(state.worker_started_at if state else None),
         "heartbeat_at": _iso_datetime(heartbeat),
     }

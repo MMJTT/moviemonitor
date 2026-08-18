@@ -6,6 +6,8 @@ from django.utils import timezone
 MIGRATION_0004 = ("core", "0004_switch_notifications_to_agent_mail")
 MIGRATION_0005 = ("core", "0005_server_runtime_fields")
 MIGRATION_0006 = ("core", "0006_terminal_failure_streak")
+MIGRATION_0007 = ("core", "0007_runtime_state")
+MIGRATION_0008 = ("core", "0008_agent_mail_verification_state")
 
 
 @pytest.mark.django_db(transaction=True)
@@ -73,6 +75,38 @@ def test_0006_initializes_existing_task_terminal_failure_streak():
     migrated = NewMonitorTask.objects.get(pk=task.pk)
     assert migrated.consecutive_failures == 4
     assert migrated.consecutive_terminal_failures == 0
+
+    restore_executor = MigrationExecutor(connection)
+    restore_executor.migrate(restore_executor.loader.graph.leaf_nodes())
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    ("is_verified", "expected_status"),
+    [(True, "VERIFIED"), (False, "FAILED")],
+)
+def test_0008_initializes_verification_status_from_existing_mail_verification(
+    is_verified, expected_status
+):
+    executor = MigrationExecutor(connection)
+    assert MIGRATION_0008 in executor.loader.graph.nodes
+    executor.migrate([MIGRATION_0007])
+    old_apps = executor.loader.project_state([MIGRATION_0007]).apps
+    OldAgentMailConfig = old_apps.get_model("core", "AgentMailConfig")
+    OldAgentMailConfig.objects.all().delete()
+    OldAgentMailConfig.objects.create(id=1, is_verified=is_verified)
+
+    executor = MigrationExecutor(connection)
+    executor.migrate([MIGRATION_0008])
+    new_apps = executor.loader.project_state([MIGRATION_0008]).apps
+    NewAgentMailConfig = new_apps.get_model("core", "AgentMailConfig")
+
+    config = NewAgentMailConfig.objects.get(pk=1)
+    assert config.verification_status == expected_status
+    assert config.verification_requested_at is None
+    assert config.verification_completed_at is None
+    assert config.verification_claim_token is None
+    assert config.verification_claim_expires_at is None
 
     restore_executor = MigrationExecutor(connection)
     restore_executor.migrate(restore_executor.loader.graph.leaf_nodes())

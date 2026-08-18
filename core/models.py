@@ -48,10 +48,24 @@ class AppSetting(SingletonModel):
 
 
 class AgentMailConfig(SingletonModel):
+    class VerificationStatus(models.TextChoices):
+        PENDING = "PENDING", "等待 Worker 验证"
+        VERIFIED = "VERIFIED", "已验证"
+        FAILED = "FAILED", "验证失败"
+
     sender_email = models.EmailField(default="mijiatong@agent.qq.com", editable=False)
     recipient_email = models.EmailField(default="850634546@qq.com", editable=False)
     is_verified = models.BooleanField(default=False)
     verified_at = models.DateTimeField(null=True, blank=True)
+    verification_status = models.CharField(
+        max_length=16,
+        choices=VerificationStatus.choices,
+        default=VerificationStatus.FAILED,
+    )
+    verification_requested_at = models.DateTimeField(null=True, blank=True)
+    verification_completed_at = models.DateTimeField(null=True, blank=True)
+    verification_claim_token = models.UUIDField(null=True, blank=True)
+    verification_claim_expires_at = models.DateTimeField(null=True, blank=True)
     last_error = models.CharField(max_length=200, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
