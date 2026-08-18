@@ -8,6 +8,7 @@ MIGRATION_0005 = ("core", "0005_server_runtime_fields")
 MIGRATION_0006 = ("core", "0006_terminal_failure_streak")
 MIGRATION_0007 = ("core", "0007_runtime_state")
 MIGRATION_0008 = ("core", "0008_agent_mail_verification_state")
+MIGRATION_0009 = ("core", "0009_agent_mail_verification_retry")
 
 
 @pytest.mark.django_db(transaction=True)
@@ -107,6 +108,29 @@ def test_0008_initializes_verification_status_from_existing_mail_verification(
     assert config.verification_completed_at is None
     assert config.verification_claim_token is None
     assert config.verification_claim_expires_at is None
+
+    restore_executor = MigrationExecutor(connection)
+    restore_executor.migrate(restore_executor.loader.graph.leaf_nodes())
+
+
+@pytest.mark.django_db(transaction=True)
+def test_0009_initializes_persisted_identity_retry_state():
+    executor = MigrationExecutor(connection)
+    assert MIGRATION_0009 in executor.loader.graph.nodes
+    executor.migrate([MIGRATION_0008])
+    old_apps = executor.loader.project_state([MIGRATION_0008]).apps
+    OldAgentMailConfig = old_apps.get_model("core", "AgentMailConfig")
+    OldAgentMailConfig.objects.all().delete()
+    OldAgentMailConfig.objects.create(id=1, is_verified=False)
+
+    executor = MigrationExecutor(connection)
+    executor.migrate([MIGRATION_0009])
+    new_apps = executor.loader.project_state([MIGRATION_0009]).apps
+    NewAgentMailConfig = new_apps.get_model("core", "AgentMailConfig")
+
+    config = NewAgentMailConfig.objects.get(pk=1)
+    assert config.verification_retry_count == 0
+    assert config.verification_next_attempt_at is None
 
     restore_executor = MigrationExecutor(connection)
     restore_executor.migrate(restore_executor.loader.graph.leaf_nodes())

@@ -5,7 +5,9 @@ import pytest
 from freezegun import freeze_time
 
 from core.models import MonitorTask, Notification
+from core.services.agent_mail import AgentMailTemporaryError
 from core.services.notifications import deliver_notification, expire_due_task
+from core.worker import run_worker_due_work
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -69,46 +71,48 @@ def test_all_past_date_tasks_expire_before_live_polling(task_factory):
 
 
 @pytest.mark.django_db
-def test_expiry_wins_over_pending_opening_delivery(opening_notification, mocker):
-    """Allowing a pending opening email to send after the date boundary must fail this test."""
+def test_expiry_skips_detected_task_with_pending_opening(opening_notification, mocker):
+    """Expiring a known opening would replace the true result with a false expiry."""
     now = datetime(2026, 8, 21, 0, 0, tzinfo=SHANGHAI)
     opening_notification.task.show_date = date(2026, 8, 20)
     opening_notification.task.save()
     send = mocker.patch("core.services.notifications.send_agent_mail")
 
-    assert expire_due_task(now=now) is True
+    assert expire_due_task(now=now) is False
     deliver_notification(opening_notification.pk, now=now)
 
     opening_notification.refresh_from_db()
     opening_notification.task.refresh_from_db()
-    assert opening_notification.status == Notification.Status.PERMANENT_FAILED
-    assert opening_notification.last_error == "expired-before-delivery"
-    assert opening_notification.task.status == MonitorTask.Status.EXPIRED
+    assert opening_notification.status == Notification.Status.PENDING
+    assert opening_notification.task.status == MonitorTask.Status.DETECTED
     assert opening_notification.task.notifications.filter(
         notification_type=Notification.Type.EXPIRY
-    ).count() == 1
+    ).count() == 0
     send.assert_not_called()
 
 
 @pytest.mark.django_db
-def test_direct_opening_delivery_at_boundary_expires_instead(opening_notification, mocker):
-    """Bypassing expiry ordering through direct delivery must not send a late opening email."""
+def test_direct_opening_delivery_after_boundary_sends_known_opening(
+    opening_notification, verified_smtp, mocker
+):
+    """The show-date boundary must not discard an opening detected before midnight."""
     now = datetime(2026, 8, 21, 0, 0, tzinfo=SHANGHAI)
     opening_notification.task.show_date = date(2026, 8, 20)
     opening_notification.task.save()
-    send = mocker.patch("core.services.notifications.send_agent_mail")
+    send = mocker.patch(
+        "core.services.notifications.send_agent_mail", return_value="queued"
+    )
 
     deliver_notification(opening_notification.pk, now=now)
 
     opening_notification.refresh_from_db()
     opening_notification.task.refresh_from_db()
-    assert opening_notification.status == Notification.Status.PERMANENT_FAILED
-    assert opening_notification.last_error == "expired-before-delivery"
-    assert opening_notification.task.status == MonitorTask.Status.EXPIRED
+    assert opening_notification.status == Notification.Status.SENT
+    assert opening_notification.task.status == MonitorTask.Status.COMPLETED
     assert opening_notification.task.notifications.filter(
         notification_type=Notification.Type.EXPIRY
-    ).count() == 1
-    send.assert_not_called()
+    ).count() == 0
+    send.assert_called_once()
 
 
 @pytest.mark.django_db
@@ -129,3 +133,42 @@ def test_successful_expiry_mail_keeps_task_expired(active_task, verified_smtp, m
     notification.refresh_from_db()
     assert notification.status == Notification.Status.SENT
     assert active_task.status == MonitorTask.Status.EXPIRED
+
+
+@pytest.mark.django_db
+def test_detected_before_midnight_survives_retry_and_sends_one_opening(
+    opening_notification, verified_smtp, mocker
+):
+    """Expiring DETECTED would replace a known opening with a false expiry alert."""
+    detected_at = datetime(2026, 8, 20, 23, 59, tzinfo=SHANGHAI)
+    retry_at = datetime(2026, 8, 21, 0, 0, tzinfo=SHANGHAI)
+    task = opening_notification.task
+    task.show_date = date(2026, 8, 20)
+    task.detected_at = detected_at
+    task.save(update_fields=["show_date", "detected_at"])
+    send = mocker.patch(
+        "core.services.notifications.send_agent_mail",
+        side_effect=[AgentMailTemporaryError("private endpoint"), "queued"],
+    )
+    mocker.patch(
+        "core.services.mail_verification.verify_agent_mail",
+        return_value="mijiatong@agent.qq.com",
+    )
+
+    deliver_notification(opening_notification.pk, now=detected_at)
+    result = run_worker_due_work(now=retry_at)
+
+    opening_notification.refresh_from_db()
+    task.refresh_from_db()
+    assert result["expired"] is False
+    assert result["notifications"] == 1
+    assert task.status == MonitorTask.Status.COMPLETED
+    assert task.expired_at is None
+    assert opening_notification.status == Notification.Status.SENT
+    assert send.call_count == 2
+    assert task.notifications.filter(
+        notification_type=Notification.Type.OPENING
+    ).count() == 1
+    assert task.notifications.filter(
+        notification_type=Notification.Type.EXPIRY
+    ).count() == 0

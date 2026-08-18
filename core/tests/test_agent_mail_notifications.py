@@ -18,6 +18,7 @@ from core.services.mail_verification import (
     request_mail_verification,
 )
 from core.services.notifications import deliver_notification, dispatch_due_notifications
+from core.worker import run_worker_due_work
 
 SENDER = "mijiatong@agent.qq.com"
 RECIPIENT = "850634546@qq.com"
@@ -84,7 +85,50 @@ def test_temporary_agent_mail_error_schedules_retry(
     assert verified_mail.verified_at is None
     assert verified_mail.verification_status == AgentMailConfig.VerificationStatus.FAILED
     assert verified_mail.verification_completed_at == now
+    assert verified_mail.verification_retry_count == 1
+    assert verified_mail.verification_next_attempt_at == now + timedelta(minutes=1)
     assert verified_mail.last_error == "agent-mail-network-error"
+
+
+@pytest.mark.django_db
+def test_temporary_delivery_recovers_identity_and_dispatches_at_one_minute(
+    opening_notification, verified_mail, mocker
+):
+    """Throttling a revoked proof for six hours would strand the one-minute retry."""
+    started_at = timezone.now()
+    send = mocker.patch(
+        "core.services.notifications.send_agent_mail",
+        side_effect=[
+            AgentMailTemporaryError("private network endpoint"),
+            "queued",
+        ],
+    )
+    verify = mocker.patch(
+        "core.services.mail_verification.verify_agent_mail",
+        return_value=SENDER,
+    )
+
+    deliver_notification(opening_notification.pk, now=started_at)
+
+    before_boundary = run_worker_due_work(now=started_at + timedelta(seconds=59))
+    assert before_boundary["mail"] is False
+    assert before_boundary["notifications"] == 0
+    verify.assert_not_called()
+
+    at_boundary = run_worker_due_work(now=started_at + timedelta(seconds=60))
+
+    opening_notification.refresh_from_db()
+    opening_notification.task.refresh_from_db()
+    verified_mail.refresh_from_db()
+    assert at_boundary["mail"] is True
+    assert at_boundary["notifications"] == 1
+    verify.assert_called_once_with()
+    assert send.call_count == 2
+    assert opening_notification.status == Notification.Status.SENT
+    assert opening_notification.task.status == MonitorTask.Status.COMPLETED
+    assert verified_mail.is_verified is True
+    assert verified_mail.verification_retry_count == 0
+    assert verified_mail.verification_next_attempt_at is None
 
 
 @pytest.mark.parametrize(

@@ -9,6 +9,9 @@ from django.utils import timezone
 from core.models import AgentMailConfig
 from core.services.coordination import notify_worker
 
+IDENTITY_RETRY_MINUTES = (1, 5, 15, 30, 60)
+TEMPORARY_IDENTITY_ERRORS = frozenset({"agent-mail-network-error"})
+
 
 @dataclass(frozen=True)
 class MailVerificationClaim:
@@ -37,6 +40,8 @@ def request_mail_verification(now: datetime | None = None) -> None:
             verification_requested_at=now,
             verification_claim_token=None,
             verification_claim_expires_at=None,
+            verification_retry_count=0,
+            verification_next_attempt_at=None,
             updated_at=now,
         )
         transaction.on_commit(notify_worker)
@@ -98,13 +103,38 @@ def _complete_claim(
         verification_completed_at=now,
         verification_claim_token=None,
         verification_claim_expires_at=None,
+        verification_retry_count=0,
+        verification_next_attempt_at=None,
         last_error=error_code,
         updated_at=now,
     )
     return updated == 1
 
 
-def _verification_values(*, now: datetime, verified: bool, error_code: str) -> dict:
+def _identity_retry_values(config, *, now: datetime, error_code: str) -> dict:
+    if error_code not in TEMPORARY_IDENTITY_ERRORS:
+        return {
+            "verification_retry_count": 0,
+            "verification_next_attempt_at": None,
+        }
+    retry_index = min(config.verification_retry_count, len(IDENTITY_RETRY_MINUTES) - 1)
+    return {
+        "verification_retry_count": min(
+            config.verification_retry_count + 1,
+            len(IDENTITY_RETRY_MINUTES),
+        ),
+        "verification_next_attempt_at": now
+        + timedelta(minutes=IDENTITY_RETRY_MINUTES[retry_index]),
+    }
+
+
+def _verification_values(
+    *,
+    now: datetime,
+    verified: bool,
+    error_code: str,
+    retry_values: dict | None = None,
+) -> dict:
     return {
         "is_verified": verified,
         "verified_at": now if verified else None,
@@ -116,8 +146,11 @@ def _verification_values(*, now: datetime, verified: bool, error_code: str) -> d
         "verification_completed_at": now,
         "verification_claim_token": None,
         "verification_claim_expires_at": None,
+        "verification_retry_count": 0,
+        "verification_next_attempt_at": None,
         "last_error": error_code,
         "updated_at": now,
+        **(retry_values or {}),
     }
 
 
@@ -170,17 +203,33 @@ def process_mail_verification(
                 )
             )
         return False
-    if not force_identity and config.verification_completed_at is not None:
-        age = now - config.verification_completed_at
-        if timedelta(0) <= age < timedelta(
-            seconds=settings.AGENT_MAIL_REVERIFY_SECONDS
-        ):
-            return False
+    if not force_identity:
+        if config.verification_next_attempt_at is not None:
+            if config.verification_next_attempt_at > now:
+                return False
+        elif config.verification_completed_at is not None:
+            age = now - config.verification_completed_at
+            if timedelta(0) <= age < timedelta(
+                seconds=settings.AGENT_MAIL_REVERIFY_SECONDS
+            ):
+                return False
 
     verified, error_code = _run_verification(verify_agent_mail)
+    retry_values = (
+        {"verification_retry_count": 0, "verification_next_attempt_at": None}
+        if verified
+        else _identity_retry_values(config, now=now, error_code=error_code)
+    )
     (
         AgentMailConfig.objects.filter(pk=config.pk, updated_at=config.updated_at)
         .exclude(verification_status=AgentMailConfig.VerificationStatus.PENDING)
-        .update(**_verification_values(now=now, verified=verified, error_code=error_code))
+        .update(
+            **_verification_values(
+                now=now,
+                verified=verified,
+                error_code=error_code,
+                retry_values=retry_values,
+            )
+        )
     )
     return True

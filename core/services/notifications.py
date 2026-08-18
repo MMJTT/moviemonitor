@@ -25,7 +25,6 @@ UNCERTAIN_AFTER_RESTART = "agent-mail-result-unknown-after-restart"
 EXPIRABLE_TASK_STATUSES = (
     MonitorTask.Status.MONITORING,
     MonitorTask.Status.PAUSED,
-    MonitorTask.Status.DETECTED,
     MonitorTask.Status.ERROR,
 )
 
@@ -168,6 +167,14 @@ def _revoke_mail_attestation(error, now):
                 verified_at=None,
             )
             return
+        retry_values = {
+            "verification_retry_count": 0,
+            "verification_next_attempt_at": None,
+        }
+        if error == "agent-mail-network-error":
+            from core.services.mail_verification import _identity_retry_values
+
+            retry_values = _identity_retry_values(config, now=now, error_code=error)
         AgentMailConfig.objects.filter(pk=config.pk).update(
             is_verified=False,
             verified_at=None,
@@ -177,6 +184,7 @@ def _revoke_mail_attestation(error, now):
             verification_claim_expires_at=None,
             last_error=error,
             updated_at=now,
+            **retry_values,
         )
 
 
@@ -263,9 +271,6 @@ def deliver_notification(notification_id, now=None):
                         "updated_at",
                     ]
                 )
-                return
-            if task.show_date < timezone.localdate(now):
-                _expire_locked_task(task, now)
                 return
         notification.status = Notification.Status.SENDING
         notification.message_id = notification.message_id or _message_id(notification)

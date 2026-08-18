@@ -68,6 +68,8 @@ class AgentMailConfig(SingletonModel):
     verification_completed_at = models.DateTimeField(null=True, blank=True)
     verification_claim_token = models.UUIDField(null=True, blank=True)
     verification_claim_expires_at = models.DateTimeField(null=True, blank=True)
+    verification_retry_count = models.PositiveSmallIntegerField(default=0)
+    verification_next_attempt_at = models.DateTimeField(null=True, blank=True)
     last_error = models.CharField(max_length=200, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 

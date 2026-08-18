@@ -536,3 +536,50 @@ def test_future_completion_timestamp_is_due_for_identity_check(
     verify.assert_called_once_with()
     config.refresh_from_db()
     assert config.verification_completed_at == now
+
+
+@pytest.mark.django_db
+def test_identity_retry_backoff_is_bounded_and_persists_across_worker_restart(mocker):
+    """Keeping retry timing in process memory would lose recovery after a restart."""
+    first_attempt = timezone.now()
+    config = AgentMailConfig.get_solo()
+    AgentMailConfig.objects.filter(pk=config.pk).update(
+        is_verified=False,
+        verified_at=None,
+        verification_status=AgentMailConfig.VerificationStatus.FAILED,
+        verification_completed_at=first_attempt - timedelta(minutes=1),
+        verification_retry_count=1,
+        verification_next_attempt_at=first_attempt,
+        last_error="agent-mail-network-error",
+        updated_at=first_attempt - timedelta(minutes=1),
+    )
+    verify = mocker.patch(
+        "core.services.mail_verification.verify_agent_mail",
+        side_effect=[
+            AgentMailTemporaryError("private endpoint"),
+            config.sender_email,
+        ],
+    )
+
+    assert process_mail_verification(now=first_attempt) is True
+
+    persisted = AgentMailConfig.objects.get(pk=1)
+    assert persisted.verification_retry_count == 2
+    assert persisted.verification_next_attempt_at == first_attempt + timedelta(minutes=5)
+    assert process_mail_verification(
+        now=first_attempt + timedelta(minutes=5) - timedelta(microseconds=1)
+    ) is False
+
+    # A fresh ORM instance models a restarted Worker consuming only durable state.
+    persisted = AgentMailConfig.objects.get(pk=1)
+    assert persisted.verification_next_attempt_at == first_attempt + timedelta(minutes=5)
+    assert process_mail_verification(
+        now=first_attempt + timedelta(minutes=5)
+    ) is True
+
+    persisted.refresh_from_db()
+    assert verify.call_count == 2
+    assert persisted.is_verified is True
+    assert persisted.verification_status == AgentMailConfig.VerificationStatus.VERIFIED
+    assert persisted.verification_retry_count == 0
+    assert persisted.verification_next_attempt_at is None
