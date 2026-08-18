@@ -99,8 +99,12 @@ def test_wait_for_worker_uses_bounded_local_wait_after_redis_failure(
     assert "private redis endpoint" not in caplog.text
 
 
-def test_worker_runs_expiry_mail_then_one_claim(mocker):
+def test_worker_runs_mail_verification_expiry_notifications_then_one_claim(mocker):
     calls = []
+    mocker.patch(
+        "core.worker.process_mail_verification",
+        side_effect=lambda now=None: calls.append("verify-mail") or True,
+    )
     mocker.patch(
         "core.worker.expire_due_task",
         side_effect=lambda now=None: calls.append("expire") or False,
@@ -121,8 +125,13 @@ def test_worker_runs_expiry_mail_then_one_claim(mocker):
 
     result = run_due_work(now=timezone.now())
 
-    assert calls == ["expire", "mail", "claim", "check"]
-    assert result == {"expired": False, "notifications": 1, "checked": True}
+    assert calls == ["verify-mail", "expire", "mail", "claim", "check"]
+    assert result == {
+        "mail": True,
+        "expired": False,
+        "notifications": 1,
+        "checked": True,
+    }
     check.assert_called_once_with(
         claim.task_id, now=mocker.ANY, claim_token=claim.token
     )
@@ -131,14 +140,15 @@ def test_worker_runs_expiry_mail_then_one_claim(mocker):
 def test_worker_loop_skips_wait_while_work_remains(settings, mocker):
     settings.WORKER_SCAN_SECONDS = 23
     loop = WorkerLoop()
+    mocker.patch("core.worker.process_mail_verification")
     mocker.patch("core.worker.record_worker_heartbeat")
     mocker.patch("core.worker.mark_uncertain_sending_notifications", return_value=0)
     run_once = mocker.patch.object(
         loop,
         "run_once",
         side_effect=[
-            {"expired": False, "notifications": 1, "checked": False},
-            {"expired": False, "notifications": 0, "checked": False},
+            {"mail": False, "expired": False, "notifications": 1, "checked": False},
+            {"mail": False, "expired": False, "notifications": 0, "checked": False},
         ],
     )
     wait = mocker.patch("core.worker.wait_for_worker", side_effect=lambda *args: loop.stop())
@@ -155,6 +165,7 @@ def test_worker_startup_marks_uncertain_notifications_once(settings, mocker):
     """Skipping startup recovery would leave crash-interrupted sends stranded."""
     settings.WORKER_SCAN_SECONDS = 23
     loop = WorkerLoop()
+    mocker.patch("core.worker.process_mail_verification")
     mocker.patch("core.worker.record_worker_heartbeat")
     mark_uncertain = mocker.patch(
         "core.worker.mark_uncertain_sending_notifications", return_value=2
@@ -162,7 +173,12 @@ def test_worker_startup_marks_uncertain_notifications_once(settings, mocker):
     mocker.patch.object(
         loop,
         "run_once",
-        return_value={"expired": False, "notifications": 0, "checked": False},
+        return_value={
+            "mail": False,
+            "expired": False,
+            "notifications": 0,
+            "checked": False,
+        },
     )
     mocker.patch("core.worker.wait_for_worker", side_effect=lambda *args: loop.stop())
     mocker.patch("core.worker.notify_worker", return_value=False)
@@ -172,17 +188,60 @@ def test_worker_startup_marks_uncertain_notifications_once(settings, mocker):
     mark_uncertain.assert_called_once_with()
 
 
+def test_worker_forces_identity_before_recording_startup_heartbeat(settings, mocker):
+    """Reversing startup order would publish health before credential attestation."""
+    settings.WORKER_SCAN_SECONDS = 23
+    loop = WorkerLoop()
+    calls = []
+    process = mocker.patch(
+        "core.worker.process_mail_verification",
+        side_effect=lambda **kwargs: calls.append(("mail", kwargs)),
+    )
+    heartbeat = mocker.patch(
+        "core.worker.record_worker_heartbeat",
+        side_effect=lambda **kwargs: calls.append(("heartbeat", kwargs)),
+    )
+    mocker.patch("core.worker.mark_uncertain_sending_notifications", return_value=0)
+    mocker.patch.object(
+        loop,
+        "run_once",
+        return_value={
+            "mail": False,
+            "expired": False,
+            "notifications": 0,
+            "checked": False,
+        },
+    )
+    mocker.patch("core.worker.wait_for_worker", side_effect=lambda *args: loop.stop())
+    mocker.patch("core.worker.notify_worker", return_value=False)
+
+    loop.run_forever()
+
+    assert calls == [
+        ("mail", {"force_identity": True}),
+        ("heartbeat", {"started": True}),
+    ]
+    process.assert_called_once_with(force_identity=True)
+    heartbeat.assert_called_once_with(started=True)
+
+
 def test_worker_stop_interrupts_local_fallback_wait(settings, mocker):
     settings.WORKER_SCAN_SECONDS = 60
     loop = WorkerLoop()
     waiting = threading.Event()
+    mocker.patch("core.worker.process_mail_verification")
     mocker.patch("core.worker.record_worker_heartbeat")
     mocker.patch("core.worker.mark_uncertain_sending_notifications", return_value=0)
 
     mocker.patch.object(
         loop,
         "run_once",
-        return_value={"expired": False, "notifications": 0, "checked": False},
+        return_value={
+            "mail": False,
+            "expired": False,
+            "notifications": 0,
+            "checked": False,
+        },
     )
 
     def local_wait(timeout_seconds, stop_event=None):

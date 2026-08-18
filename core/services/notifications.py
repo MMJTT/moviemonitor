@@ -13,6 +13,7 @@ from core.services.agent_mail import (
     AgentMailPermanentError,
     AgentMailTemporaryError,
     AgentMailUncertainError,
+    safe_agent_mail_error_code,
     send_agent_mail,
 )
 from core.services.tasks import TASK_NO_LONGER_DETECTED, opening_notification_transition
@@ -156,7 +157,8 @@ def mark_uncertain_sending_notifications() -> int:
         )
 
 
-def _park_for_mail_repair(notification_id, error, *, unverify_mail):
+def _park_for_mail_repair(notification_id, error, *, unverify_mail, now=None):
+    now = now or timezone.now()
     with transaction.atomic():
         current = Notification.objects.select_for_update().get(pk=notification_id)
         if current.status != Notification.Status.SENDING:
@@ -171,8 +173,12 @@ def _park_for_mail_repair(notification_id, error, *, unverify_mail):
             AgentMailConfig.objects.filter(pk=1).update(
                 is_verified=False,
                 verified_at=None,
+                verification_status=AgentMailConfig.VerificationStatus.FAILED,
+                verification_completed_at=now,
+                verification_claim_token=None,
+                verification_claim_expires_at=None,
                 last_error=error,
-                updated_at=timezone.now(),
+                updated_at=now,
             )
 
 
@@ -253,7 +259,10 @@ def deliver_notification(notification_id, now=None):
     config = AgentMailConfig.get_solo()
     if not config.is_verified:
         _park_for_mail_repair(
-            notification_id, "agent-mail-not-verified", unverify_mail=False
+            notification_id,
+            "agent-mail-not-verified",
+            unverify_mail=False,
+            now=now,
         )
         return
     notification.task = task
@@ -266,7 +275,12 @@ def deliver_notification(notification_id, now=None):
         _mark_notification_needs_review(notification_id, str(exc))
         return
     except (AgentMailAuthError, AgentMailConfigError) as exc:
-        _park_for_mail_repair(notification_id, str(exc), unverify_mail=True)
+        _park_for_mail_repair(
+            notification_id,
+            safe_agent_mail_error_code(exc),
+            unverify_mail=True,
+            now=now,
+        )
         return
     except AgentMailTemporaryError as exc:
         _reschedule_notification(notification_id, str(exc), now)

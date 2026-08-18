@@ -1,3 +1,4 @@
+import uuid
 from datetime import timedelta
 
 import pytest
@@ -6,6 +7,7 @@ from django.utils import timezone
 from core.models import AgentMailConfig, MonitorTask, Notification
 from core.services.agent_mail import (
     AgentMailAuthError,
+    AgentMailConfigError,
     AgentMailPermanentError,
     AgentMailTemporaryError,
 )
@@ -21,6 +23,7 @@ def verified_mail(db):
     config.recipient_email = RECIPIENT
     config.is_verified = True
     config.verified_at = timezone.now()
+    config.verification_status = AgentMailConfig.VerificationStatus.VERIFIED
     config.save()
     return config
 
@@ -72,25 +75,45 @@ def test_temporary_agent_mail_error_schedules_retry(
     assert opening_notification.last_error == "agent-mail-network-error"
 
 
+@pytest.mark.parametrize(
+    ("error", "safe_code"),
+    [
+        (AgentMailAuthError("private OAuth token detail"), "agent-mail-auth-required"),
+        (AgentMailConfigError("private keyring path"), "agent-mail-config-error"),
+    ],
+)
 @pytest.mark.django_db
-def test_agent_mail_auth_error_parks_notification_and_unverifies_config(
-    opening_notification, verified_mail, mocker
+def test_agent_mail_credential_error_parks_notification_and_revokes_attestation(
+    opening_notification, verified_mail, mocker, error, safe_code
 ):
+    now = timezone.now()
+    stale_token = uuid.uuid4()
+    AgentMailConfig.objects.filter(pk=verified_mail.pk).update(
+        verification_claim_token=stale_token,
+        verification_claim_expires_at=now + timedelta(minutes=2),
+    )
     mocker.patch(
         "core.services.notifications.send_agent_mail",
-        side_effect=AgentMailAuthError("agent-mail-auth-required"),
+        side_effect=error,
         create=True,
     )
 
-    deliver_notification(opening_notification.pk)
+    deliver_notification(opening_notification.pk, now=now)
 
     opening_notification.refresh_from_db()
     verified_mail.refresh_from_db()
     assert opening_notification.status == Notification.Status.PENDING
     assert opening_notification.next_attempt_at is None
-    assert opening_notification.last_error == "agent-mail-auth-required"
+    assert opening_notification.last_error == safe_code
     assert verified_mail.is_verified is False
     assert verified_mail.verified_at is None
+    assert verified_mail.verification_status == AgentMailConfig.VerificationStatus.FAILED
+    assert verified_mail.verification_completed_at == now
+    assert verified_mail.verification_claim_token is None
+    assert verified_mail.verification_claim_expires_at is None
+    assert verified_mail.last_error == safe_code
+    assert "private" not in opening_notification.last_error
+    assert "private" not in verified_mail.last_error
 
 
 @pytest.mark.django_db

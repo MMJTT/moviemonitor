@@ -1,3 +1,5 @@
+import uuid
+from datetime import timedelta
 from io import StringIO
 
 import pytest
@@ -15,6 +17,13 @@ from core.services.agent_mail import (
 @pytest.mark.django_db
 def test_preflight_rejects_sender_mismatch_without_cli_details(mocker):
     cli_detail = "provider stderr: oauth token=private-token"
+    config = AgentMailConfig.get_solo()
+    config.is_verified = True
+    config.verified_at = timezone.now()
+    config.verification_status = AgentMailConfig.VerificationStatus.VERIFIED
+    config.verification_claim_token = uuid.uuid4()
+    config.verification_claim_expires_at = timezone.now()
+    config.save()
     mocker.patch(
         "core.management.commands.agent_mail_preflight.verify_agent_mail",
         side_effect=AgentMailConfigError(cli_detail),
@@ -28,6 +37,14 @@ def test_preflight_rejects_sender_mismatch_without_cli_details(mocker):
     assert cli_detail not in str(caught.value)
     assert cli_detail not in output.getvalue()
     assert caught.value.__cause__ is None
+    config.refresh_from_db()
+    assert config.is_verified is False
+    assert config.verified_at is None
+    assert config.verification_status == AgentMailConfig.VerificationStatus.FAILED
+    assert config.verification_completed_at is not None
+    assert config.verification_claim_token is None
+    assert config.verification_claim_expires_at is None
+    assert config.last_error == "agent-mail-config-error"
 
 
 @pytest.mark.django_db
@@ -49,6 +66,32 @@ def test_preflight_sanitizes_unexpected_identity_error(mocker):
 
 
 @pytest.mark.django_db
+def test_preflight_identity_success_records_fresh_verification(mocker):
+    now = timezone.now()
+    config = AgentMailConfig.get_solo()
+    AgentMailConfig.objects.filter(pk=config.pk).update(
+        verification_status=AgentMailConfig.VerificationStatus.FAILED,
+        verification_completed_at=now - timedelta(days=1),
+        last_error="old-safe-error",
+    )
+    mocker.patch(
+        "core.management.commands.agent_mail_preflight.verify_agent_mail",
+        return_value=config.sender_email,
+    )
+    output = StringIO()
+
+    call_command("agent_mail_preflight", stdout=output)
+
+    config.refresh_from_db()
+    assert config.is_verified is True
+    assert config.verified_at is not None
+    assert config.verification_status == AgentMailConfig.VerificationStatus.VERIFIED
+    assert config.verification_completed_at is not None
+    assert config.last_error == ""
+    assert "Agent Mail preflight passed." in output.getvalue()
+
+
+@pytest.mark.django_db
 def test_preflight_send_test_marks_config_verified_only_after_queued_success(mocker):
     config = AgentMailConfig.get_solo()
     config.is_verified = True
@@ -60,6 +103,8 @@ def test_preflight_send_test_marks_config_verified_only_after_queued_success(moc
         current.refresh_from_db()
         assert current.is_verified is False
         assert current.verified_at is None
+        assert current.verification_status == AgentMailConfig.VerificationStatus.PENDING
+        assert current.verification_completed_at is None
         assert current.last_error == ""
         return "queued"
 
@@ -74,6 +119,8 @@ def test_preflight_send_test_marks_config_verified_only_after_queued_success(moc
     config.refresh_from_db()
     assert config.is_verified is True
     assert config.verified_at is not None
+    assert config.verification_status == AgentMailConfig.VerificationStatus.VERIFIED
+    assert config.verification_completed_at is not None
     assert config.last_error == ""
     assert "Agent Mail preflight passed." in output.getvalue()
     send_test.assert_called_once()
@@ -98,6 +145,8 @@ def test_preflight_send_test_persists_only_mapped_safe_error_code(mocker):
     config.refresh_from_db()
     assert config.is_verified is False
     assert config.verified_at is None
+    assert config.verification_status == AgentMailConfig.VerificationStatus.FAILED
+    assert config.verification_completed_at is not None
     assert config.last_error == "agent-mail-network-error"
     assert cli_detail not in str(caught.value)
     assert cli_detail not in output.getvalue()
@@ -122,6 +171,8 @@ def test_preflight_send_test_sanitizes_unexpected_error_and_marks_failed(mocker)
     config.refresh_from_db()
     assert config.is_verified is False
     assert config.verified_at is None
+    assert config.verification_status == AgentMailConfig.VerificationStatus.FAILED
+    assert config.verification_completed_at is not None
     assert config.last_error == "agent-mail-preflight-failed"
     assert str(caught.value) == "Agent Mail preflight failed: agent-mail-preflight-failed"
     assert cli_detail not in str(caught.value)

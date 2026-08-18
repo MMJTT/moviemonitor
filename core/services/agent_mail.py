@@ -32,6 +32,23 @@ class AgentMailConfigError(AgentMailError):
     """The local Agent Mail installation or identity is invalid."""
 
 
+_SAFE_ERROR_CODES = (
+    (AgentMailAuthError, "agent-mail-auth-required"),
+    (AgentMailTemporaryError, "agent-mail-network-error"),
+    (AgentMailUncertainError, "agent-mail-result-unknown"),
+    (AgentMailPermanentError, "agent-mail-recipient-rejected"),
+    (AgentMailConfigError, "agent-mail-config-error"),
+)
+_DEFAULT_SAFE_ERROR_CODE = "agent-mail-preflight-failed"
+
+
+def safe_agent_mail_error_code(error: Exception) -> str:
+    for error_type, error_code in _SAFE_ERROR_CODES:
+        if isinstance(error, error_type):
+            return error_code
+    return _DEFAULT_SAFE_ERROR_CODE
+
+
 def _cli_path():
     path = shutil.which("agently-cli")
     if path is None:

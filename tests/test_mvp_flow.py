@@ -498,6 +498,10 @@ def test_mocked_local_flow_sends_one_opening_mail_and_completes(
     """Breaking any closed-loop boundary must stop completion or duplicate the opening mail."""
     test_mail = mocker.patch("core.views.test_agent_mail_config", return_value="queued")
     mocker.patch("core.services.tasks.verify_agent_mail", return_value="mijiatong@agent.qq.com")
+    mocker.patch(
+        "core.services.mail_verification.verify_agent_mail",
+        return_value="mijiatong@agent.qq.com",
+    )
     send_mail = mocker.patch(
         "core.services.notifications.send_agent_mail", return_value="queued"
     )
@@ -569,6 +573,11 @@ def test_mocked_local_flow_sends_one_opening_mail_and_completes(
     assert task.movie_name in completed_body
 
     no_duplicate_pass = run_due_work(now=now)
-    assert no_duplicate_pass == {"expired": False, "notifications": 0, "checked": False}
+    assert no_duplicate_pass == {
+        "mail": False,
+        "expired": False,
+        "notifications": 0,
+        "checked": False,
+    }
     assert send_mail.call_count == 1
     assert task.notifications.filter(notification_type=Notification.Type.OPENING).count() == 1
